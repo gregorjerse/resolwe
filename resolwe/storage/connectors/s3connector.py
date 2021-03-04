@@ -80,6 +80,48 @@ class AwsS3Connector(BaseStorageConnector):
             ExtraArgs=extra_args,
         )
 
+    def multipart_push_start(self, url, size=None):
+        """Start a multipart upload.
+
+        :returns: the upload id.
+        """
+        url = os.fspath(url)
+        mime_type = mimetypes.guess_type(url)[0]
+        upload_args = {"Bucket": self.bucket_name, "Key": url}
+        if mime_type is not None:
+            upload_args["ContentType"] = mime_type
+        response = self.client.create_multipart_upload(**upload_args)
+        return response["UploadId"]
+
+    def multipart_push(self, upload_id, url, part_number, chunk_size, data, md5=None):
+        """Upload a single part of multipart upload."""
+        result = self.client.upload_part(
+            Body=data,
+            Bucket=self.bucket_name,
+            ContentMD5=md5,
+            Key=os.fspath(url),
+            PartNumber=part_number,
+            UploadId=upload_id,
+        )
+        return {"ETag": result["ETag"], "PartNumber": part_number}
+
+    def multipart_push_complete(self, upload_id, url, completed_chunks):
+        """Complete the multipart push."""
+        return self.client.complete_multipart_upload(
+            Bucket=self.bucket_name,
+            Key=os.fspath(url),
+            UploadId=upload_id,
+            MultipartUpload={"Parts": completed_chunks},
+        )
+
+    def multipart_push_abort(self, upload_id, url):
+        """Abort multiport upload."""
+        return self.cliest.abort_multipart_upload(
+            Bucket=self.bucket_name,
+            Key=os.fspath(url),
+            UploadId=upload_id,
+        )
+
     @validate_urls
     @validate_url
     def delete(self, url, urls):
@@ -251,3 +293,57 @@ class AwsS3Connector(BaseStorageConnector):
 
         # The response contains the presigned URL
         return response
+
+
+# {
+#    "upload": {"connector": "resolwe.storage.connectors.localconnector.LocalFilesystemConnector","config": {"priority": 50, "path": "/storage/genialis/upload"}}
+# }
+
+
+# GENESIS_STORAGE_CONNECTORS = {
+#     "local": {
+#         "connector": "resolwe.storage.connectors.localconnector.LocalFilesystemConnector",
+#         "config": {
+#             "priority": 50,
+#             "path": "/storage/genialis/data",
+#             "delete": {
+#                 "delay": 1,
+#                 "min_other_copies": 2,
+#                 "process_type": {
+#                     "data:index": {"delay": -1},
+#                     "data:annotation": {"delay": -1},
+#                 },
+#             },
+#         },
+#     },
+#     "S3": {
+#         "connector": "resolwe.storage.connectors.s3connector.AwsS3Connector",
+#         "config": {
+#             "priority": 30,
+#             "bucket": "genialis-qa-storage",
+#             "region_name": "eu-north-1",
+#             "credentials": "/srv/genialis/secrets/storage_s3.json",
+#             "copy": {"delay": 0},
+#         },
+#     },
+#     "backup": {
+#         "connector": "genesis.backup.connectors.googlebackupconnector.GoogleBackupConnector",
+#         "config": {
+#             "priority": 100,
+#             "bucket": "backup-qa-io",
+#             "credentials": "/srv/genialis/secrets/storage_backup.json",
+#             "gpg_homedir": "/srv/genialis/.gnupg",
+#             "gpg_recipient_keys": [
+#                 "F031840E5ECAEDB499293380D287E0EBE6CD1DA8",
+#                 "280F2F2A979A98CB6CC04968D81D328E07EE719C",
+#                 "E66D96FDA9B3453927488ABECCB6E3A1B355722A",
+#             ],
+#             "gpg_sign_key": "E66D96FDA9B3453927488ABECCB6E3A1B355722A",
+#             "gpg_passphrase": "GJCYEQK8e0m-H10VtgdMLcEa3XXYfHAF?g=sOMQU",
+#             "temporary_directory": "/storage/genialis/storage_backup_tmp/",
+#             "copy": {"delay": 0},
+#         },
+#     },
+#     "upload": {"connector": "resolwe.storage.connectors.s3connector.AwsS3Connector", "config": { "priority": 30, "bucket": "genialis-qa-upload", "region_name": "eu-north-1", "credentials": "/srv/genialis/secrets/upload.json"}
+#     }
+# }
