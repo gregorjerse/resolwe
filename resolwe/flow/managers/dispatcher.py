@@ -296,7 +296,7 @@ class Manager:
         result = Path(getattr(settings, "FLOW_EXECUTOR", {}).get(dir_base, ""))
         return result / subpath
 
-    def _get_upload_connector_name(self) -> str:
+    def _get_data_connector_name(self) -> str:
         """Return storage connector that will be used for new data object.
 
         The current implementation returns the connector with the lowest
@@ -327,7 +327,7 @@ class Manager:
                 file_storage=file_storage,
                 url=str(file_storage.id),
                 status=StorageLocation.STATUS_PREPARING,
-                connector_name=self._get_upload_connector_name(),
+                connector_name=self._get_data_connector_name(),
             )
             file_storage.data.add(data)
 
@@ -424,7 +424,6 @@ class Manager:
                     container_secrets_dir / base_credentials_name
                 )
         django_settings["STORAGE_CONNECTORS"] = connectors_settings
-        django_settings["UPLOAD_CONNECTOR_NAME"] = self._get_upload_connector_name()
 
         # Extend the settings with whatever the executor wants.
         logger.debug(

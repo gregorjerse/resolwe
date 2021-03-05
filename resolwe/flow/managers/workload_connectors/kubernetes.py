@@ -112,7 +112,10 @@ class Connector(BaseConnector):
             "GENIALIS_UID": os.getuid(),
             "GENIALIS_GID": os.getgid(),
             "DESCRIPTOR_CHUNK_SIZE": 100,
-            "UPLOAD_CONNECTOR_NAME": self._get_upload_connector_name(data),
+            "DATA_CONNECTOR_NAME": self._get_data_connector_name(data),
+            "EXPORT_CONNECTOR_NAME": getattr(
+                settings, "FLOW_EXPORT_CONNECTOR_NAME", "export"
+            ),
             # Is the DATA_ALL volume shared between containers. This is needed
             # in init container to know how to download missing data.
             "DATA_ALL_VOLUME_SHARED": False,
@@ -124,7 +127,7 @@ class Connector(BaseConnector):
             {"name": name, "value": str(value)} for name, value in environment.items()
         ]
 
-    def _get_upload_connector_name(self, data: Data) -> str:
+    def _get_data_connector_name(self, data: Data) -> str:
         """Get the connector for data upload.
 
         Read the connector name from the StorageLocation class created by the

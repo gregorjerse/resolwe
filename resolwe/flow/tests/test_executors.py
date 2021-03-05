@@ -135,8 +135,9 @@ class ManagerRunProcessTest(ProcessTestCase):
         file_path = data.location.get_path(filename="foo.bar")
         self.assertEqual(data.output["saved_file"]["file"], "foo.bar")
         self.assertTrue(os.path.isfile(file_path))
+        with open(file_path, "rt") as stream:
+            self.assertEqual(stream.read(), "foo.bar\n")
         self.assertEqual(data.tags, ["test-tag"])
-
         parent_data = Data.objects.first()
         self.assertEqual(data.parents.count(), 1)
         self.assertEqual(data.parents.first(), parent_data)

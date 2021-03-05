@@ -186,6 +186,10 @@ class FlowExecutor(LocalFlowExecutor):
                 storage_url / ExecutorFiles.SOCKETS_SUBDIR,
                 read_only=False,
             ),
+            # To export files to upload volume.
+            self._new_volume(
+                "upload", "UPLOAD_DIR", constants.UPLOAD_VOLUME, read_only=False
+            ),
         ]
         return dict(communicator_volumes)
 
@@ -379,7 +383,6 @@ class FlowExecutor(LocalFlowExecutor):
             "DATA_LOCAL_VOLUME": os.fspath(constants.DATA_LOCAL_VOLUME),
             "DATA_ALL_VOLUME": os.fspath(constants.DATA_ALL_VOLUME),
             "DATA_VOLUME": os.fspath(constants.DATA_VOLUME),
-            "UPLOAD_VOLUME": os.fspath(constants.UPLOAD_VOLUME),
             "SECRETS_DIR": os.fspath(constants.SECRETS_VOLUME),
             "RUNNING_IN_CONTAINER": 1,
             "RUNNING_IN_DOCKER": 1,
@@ -388,7 +391,10 @@ class FlowExecutor(LocalFlowExecutor):
             "DESCRIPTOR_CHUNK_SIZE": 100,
             # Must init container set permissions.
             "INIT_SET_PERMISSIONS": False,
-            "UPLOAD_CONNECTOR_NAME": SETTINGS.get("UPLOAD_CONNECTOR_NAME", "local"),
+            "DATA_CONNECTOR_NAME": SETTINGS.get("FLOW_DATA_CONNECTOR_NAME", "local"),
+            "EXPORT_CONNECTOR_NAME": SETTINGS.get(
+                "FLOW_EXPORT_CONNECTOR_NAME", "export"
+            ),
         }
 
         autoremove = SETTINGS.get("FLOW_DOCKER_AUTOREMOVE", False)

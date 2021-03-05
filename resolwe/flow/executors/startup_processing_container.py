@@ -22,7 +22,6 @@ DATA_LOCAL_VOLUME = Path(os.environ.get("DATA_LOCAL_VOLUME", "/data_local"))
 DATA_VOLUME = Path(os.environ.get("DATA_VOLUME", "/data"))
 DATA_ALL_VOLUME = Path(os.environ.get("DATA_VOLUME", "/data_all"))
 TMP_DIR = Path(os.environ.get("TMP_DIR", ".tmp"))
-UPLOAD_VOLUME = Path(os.environ.get("UPLOAD_VOLUME", "/upload"))
 
 # Basic constants.
 STDOUT_LOG_PATH = DATA_LOCAL_VOLUME / "stdout.txt"
@@ -42,6 +41,8 @@ COMMUNICATION_SOCKET = SOCKETS_PATH / os.environ.get(
 )
 SCRIPT_SOCKET = SOCKETS_PATH / os.environ.get("SCRIPT_SOCKET", "_socket2.s")
 UPLOAD_FILE_SOCKET = SOCKETS_PATH / os.getenv("UPLOAD_FILE_SOCKET", "_upload_socket.s")
+DATA_CONNECTOR_NAME = os.getenv("DATA_CONNECTOR_NAME", "local")
+EXPORT_CONNECTOR_NAME = os.getenv("EXPORT_CONNECTOR_NAME", "export")
 
 # How many file descriptors to sent over socket in a single message.
 DESCRIPTOR_CHUNK_SIZE = int(os.environ.get("DESCRIPTOR_CHUNK_SIZE", 100))
@@ -223,7 +224,8 @@ class ProtocolHandler:
             if KEEP_DATA:
                 try:
                     yield from self.manager.send_file_descriptors(
-                        [str(file) for file in Path("./").rglob("*") if file.is_file()]
+                        DATA_CONNECTOR_NAME,
+                        [str(file) for file in Path("./").rglob("*") if file.is_file()],
                     )
                 except:
                     logger.exception("Error sending file descriptors (keep_data).")
@@ -427,14 +429,19 @@ class ProcessingManager:
             return self.protocol_handler.return_code
 
     @asyncio.coroutine
-    def _handle_export_files(self, data):
+    def _handle_export_files(self, file_names):
         # type: (dict) -> None
         """Handle export files."""
-        for file_name in data:
+        unique_names = []
+        for file_name in file_names:
             unique_name = "export_" + uuid.uuid4().hex
-            export_path = UPLOAD_VOLUME / unique_name
-            self.exported_files_mapper[file_name] = unique_name
-            shutil.move(file_name, export_path)
+            shutil.move(file_name, unique_name)
+            unique_names.append(unique_name)
+        presigned_urls = yield from self.send_file_descriptors(
+            EXPORT_CONNECTOR_NAME, unique_names, True
+        )
+        for file_name, presigned_url in zip(file_names, presigned_urls):
+            self.exported_files_mapper[file_name] = presigned_url
 
     @asyncio.coroutine
     def update_log_files_timer(self):
@@ -455,7 +462,9 @@ class ProcessingManager:
                 ]
                 logger.debug("Updating log files %s.", relative_log_paths)
                 with (yield from self._uploading_log_files_lock):
-                    yield from self.send_file_descriptors(relative_log_paths)
+                    yield from self.send_file_descriptors(
+                        DATA_CONNECTOR_NAME, relative_log_paths
+                    )
                 self.log_files_need_upload = False
             else:
                 logger.debug("No upload needed for log files.")
@@ -463,8 +472,10 @@ class ProcessingManager:
             logger.exception("Error uploading log files")
 
     @asyncio.coroutine
-    def send_file_descriptors(self, filenames):
-        # type: (Union[List[str], PurePath],) -> bool  # noqa: F821
+    def send_file_descriptors(
+        self, connector_name, filenames, need_presigned_urls=False
+    ):
+        # type: (Tuple(str, Union[List[str], PurePath], bool)) -> bool  # noqa: F821
         """Send file descriptors over UNIX sockets.
 
         Code is based on the sample in manual
@@ -473,25 +484,31 @@ class ProcessingManager:
         :raises RuntimeError: on failure.
         """
 
+        def receive_message():
+            """Read and return the message."""
+            message_length = int.from_bytes(self.upload_socket.recv(8), byteorder="big")
+            message = self.upload_socket.recv(message_length).decode()
+            return json.loads(message)
+
         def send_chunk(processing_filenames):
-            """Send all processing_filenames at once.
+            """Send chunk of filenames to uploader.
 
             :raises RuntimeError: on failure.
+            :returns: the list of presigned urls (if requested) or empty list.
             """
             logger.debug("Sending file descriptors for files: %s", processing_filenames)
-            filenames_payload = json.dumps(processing_filenames).encode()
-            self.upload_socket.sendall(
-                len(filenames_payload).to_bytes(8, byteorder="big")
-            )
-            logger.debug("Filename payload: %s", filenames_payload)
+            to_send = [connector_name, processing_filenames, need_presigned_urls]
+            payload = json.dumps(to_send).encode()
+            logger.debug("Filename payload: %s", payload)
             # File handlers must be created before file descriptors otherwise garbage
             # collector will kick in and close handlers. Handlers will be closed
             # automatically when function completes.
             file_handlers = [open(filename, "rb") for filename in processing_filenames]
             file_descriptors = [file_handler.fileno() for file_handler in file_handlers]
             logger.debug("Sending file descriptors: %s", file_descriptors)
+            self.upload_socket.sendall(len(payload).to_bytes(8, byteorder="big"))
             self.upload_socket.sendmsg(
-                [filenames_payload],
+                [payload],
                 [
                     (
                         socket.SOL_SOCKET,
@@ -500,23 +517,27 @@ class ProcessingManager:
                     )
                 ],
             )
-            if self.upload_socket.recv(1) == b"0":
+            response = receive_message()
+            if not response["success"]:
                 raise RuntimeError(
                     "Communication container response indicates error sending "
                     "files {}.".format(processing_filenames)
                 )
+            return response["presigned_urls"]
 
-        logger.debug("Sending start")
+        result = []
         with (yield from self._send_file_descriptors_lock):
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 for i in range(0, len(filenames), DESCRIPTOR_CHUNK_SIZE):
                     processing_filenames = [
                         str(file_) for file_ in filenames[i : i + DESCRIPTOR_CHUNK_SIZE]
                     ]
-                    yield from self.loop.run_in_executor(
+                    response = yield from self.loop.run_in_executor(
                         pool, send_chunk, processing_filenames
                     )
-        logger.debug("Sending finished")
+                    if need_presigned_urls:
+                        result += response
+        return result
 
     @asyncio.coroutine
     def _handle_processing_script_connection(self, reader, writer):
@@ -550,7 +571,9 @@ class ProcessingManager:
                     logger.debug("Sending filedescriptors.")
                     # This can block, run in a thread maybe?
                     logger.debug("Names: %s", filenames)
-                    yield from self.send_file_descriptors(filenames)
+                    yield from self.send_file_descriptors(
+                        DATA_CONNECTOR_NAME, filenames
+                    )
                     logger.debug("Print descriptors sent.")
                     response = respond(message, "OK", "")
                 elif command == "run":
