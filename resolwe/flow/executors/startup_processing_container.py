@@ -67,7 +67,7 @@ else:
 
 
 def respond(message, status, response_data):
-    """Return a response."""
+    """Return a response to the given message."""
     if message["type"] in ["COMMAND", "EQR"]:
         response_type = "RESPONSE"
     else:
@@ -80,39 +80,6 @@ def respond(message, status, response_data):
         response["sequence_number"] = message["sequence_number"]
     response["timestamp"] = time.time()
     return response
-
-
-def _copy_file_or_dir(entries):
-    ## type: (Iterable[Union[str, Path]]) -> None
-    """Copy file and all its references to data_volume.
-
-    The entry is a path relative to the DATA_LOCAL_VOLUME (our working
-    directory). It must be copied to the DATA_VOLUME on the shared
-    filesystem.
-    """
-    for entry in entries:
-        source = Path(entry)
-        destination = DATA_VOLUME / source
-        if not destination.parent.is_dir():
-            destination.parent.mkdir(parents=True)
-
-        if source.is_dir():
-            if not destination.exists():
-                shutil.copytree(str(source), str(destination))
-            else:
-                # If destination directory exists the copytree will fail.
-                # In such case perform a recursive call with entries in
-                # the source directory as arguments.
-                #
-                # TODO: fix when we support Python 3.8 and later. See
-                # dirs_exist_ok argument to copytree method.
-                _copy_file_or_dir(source.glob("*"))
-        elif source.is_file():
-            if not destination.parent.is_dir():
-                destination.parent.mkdir(parents=True)
-            # Use copy2 to preserve file metadata, such as file creation
-            # and modification times.
-            shutil.copy2(str(source), str(destination))
 
 
 class ProtocolHandler:
@@ -447,48 +414,41 @@ class ProcessingManager:
     def update_log_files_timer(self):
         """Update log files every UPDATE_LOG_FILES_TIMEOUT secods."""
         while True:
-            logger.debug("Timer uploading log files.")
-            yield from self.upload_log_files()
+            try:
+                yield from self.upload_log_files()
+            except:
+                logger.exception("Error uploading log files.")
             yield from asyncio.sleep(UPDATE_LOG_FILES_TIMEOUT)
 
     @asyncio.coroutine
     def upload_log_files(self):
         """Upload log files if needed."""
-        try:
-            if self.log_files_need_upload:
-                relative_log_paths = [
-                    log_file.relative_to(DATA_LOCAL_VOLUME)
-                    for log_file in [STDOUT_LOG_PATH, JSON_LOG_PATH]
-                ]
-                logger.debug("Updating log files %s.", relative_log_paths)
-                with (yield from self._uploading_log_files_lock):
-                    yield from self.send_file_descriptors(
-                        DATA_CONNECTOR_NAME, relative_log_paths
-                    )
-                self.log_files_need_upload = False
-            else:
-                logger.debug("No upload needed for log files.")
-        except:
-            logger.exception("Error uploading log files")
+        if self.log_files_need_upload:
+            log_paths = [
+                log_file.relative_to(DATA_LOCAL_VOLUME)
+                for log_file in [STDOUT_LOG_PATH, JSON_LOG_PATH]
+            ]
+            logger.debug("Uploading log files %s.", log_paths)
+            with (yield from self._uploading_log_files_lock):
+                yield from self.send_file_descriptors(DATA_CONNECTOR_NAME, log_paths)
+            self.log_files_need_upload = False
 
     @asyncio.coroutine
     def send_file_descriptors(
         self, connector_name, filenames, need_presigned_urls=False
     ):
-        # type: (Tuple(str, Union[List[str], PurePath], bool)) -> bool  # noqa: F821
+        # type: (Tuple(str, Union[List[str], PurePath], bool)) -> List  # noqa: F821
         """Send file descriptors over UNIX sockets.
 
         Code is based on the sample in manual
         https://docs.python.org/3/library/socket.html#socket.socket.sendmsg .
 
+        :returns: the list of presigned urls for filenames (in the same order)
+            if need_presigned_urls is set to True. Otherwise empty list is
+            returned.
+
         :raises RuntimeError: on failure.
         """
-
-        def receive_message():
-            """Read and return the message."""
-            message_length = int.from_bytes(self.upload_socket.recv(8), byteorder="big")
-            message = self.upload_socket.recv(message_length).decode()
-            return json.loads(message)
 
         def send_chunk(processing_filenames):
             """Send chunk of filenames to uploader.
@@ -497,15 +457,13 @@ class ProcessingManager:
             :returns: the list of presigned urls (if requested) or empty list.
             """
             logger.debug("Sending file descriptors for files: %s", processing_filenames)
-            to_send = [connector_name, processing_filenames, need_presigned_urls]
-            payload = json.dumps(to_send).encode()
-            logger.debug("Filename payload: %s", payload)
-            # File handlers must be created before file descriptors otherwise garbage
-            # collector will kick in and close handlers. Handlers will be closed
-            # automatically when function completes.
+            message = [connector_name, processing_filenames, need_presigned_urls]
+            payload = json.dumps(message).encode()
+            # File handlers must be created before file descriptors otherwise
+            # garbage collector will kick in and close the handlers. Handlers
+            # will be closed when function completes.
             file_handlers = [open(filename, "rb") for filename in processing_filenames]
             file_descriptors = [file_handler.fileno() for file_handler in file_handlers]
-            logger.debug("Sending file descriptors: %s", file_descriptors)
             self.upload_socket.sendall(len(payload).to_bytes(8, byteorder="big"))
             self.upload_socket.sendmsg(
                 [payload],
@@ -517,7 +475,10 @@ class ProcessingManager:
                     )
                 ],
             )
-            response = receive_message()
+            response_length = int.from_bytes(
+                self.upload_socket.recv(8), byteorder="big"
+            )
+            response = json.loads(self.upload_socket.recv(response_length).decode())
             if not response["success"]:
                 raise RuntimeError(
                     "Communication container response indicates error sending "
