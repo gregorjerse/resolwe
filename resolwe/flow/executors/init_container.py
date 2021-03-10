@@ -118,7 +118,7 @@ async def download_to_location(
     # be re-raised.
     for future in paralelize(
         objects=files,
-        worker=partial(transfer.transfer_chunk, None),
+        worker=lambda objects: transfer.transfer_chunk(None, objects),
         max_threads=max_threads,
     ):
         future.result()

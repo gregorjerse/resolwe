@@ -5,7 +5,7 @@ from contextlib import suppress
 from functools import partial
 from pathlib import Path
 from time import sleep
-from typing import TYPE_CHECKING, Iterable, List, Optional, Union
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Union
 
 import wrapt
 from requests.exceptions import ConnectionError as RequestsConnectionError
@@ -61,9 +61,7 @@ class Transfer:
         self.from_connector = from_connector
         self.to_connector = to_connector
 
-    def pre_processing(
-        self, url: Union[str, Path], objects: Optional[List[dict]] = None
-    ):
+    def pre_processing(self, url: Union[str, Path], objects: List[Dict] = None):
         """Notify connectors that transfer is about to start.
 
         The connector is allowed to change names of the objects that are to be
@@ -79,9 +77,7 @@ class Transfer:
         self.to_connector.before_push(objects_to_transfer, url)
         return objects_to_transfer
 
-    def post_processing(
-        self, url: Union[str, Path], objects: Optional[List[dict]] = None
-    ):
+    def post_processing(self, url: Union[str, Path], objects: List[dict] = None):
         """Notify connectors that transfer is complete.
 
         :param url: base url for file transfer.
@@ -209,17 +205,41 @@ class Transfer:
         """
         to_base_url = Path(to_base_url)
         chunk_size = object_.get("chunk_size", BaseStorageConnector.CHUNK_SIZE)
+
         # Duplicate connectors for thread safety.
         to_connector = to_connector or self.to_connector.duplicate()
         from_connector = from_connector or self.from_connector.duplicate()
 
+        skip_final_hash_check = (
+            from_connector.get_ensures_data_integrity
+            and to_connector.put_ensures_data_integrity
+        )
+
         from_url = Path(from_base_url) / object_["path"]
         hashes = {type_: object_[type_] for type_ in ["md5", "crc32c", "awss3etag"]}
+
+        if skip_final_hash_check:
+            # When final check is skipped make sure that the input connector
+            # hash equals to the hash given by the _object (usually read from
+            # the database).
+            hash_to_check = next(
+                hash for hash in from_connector.supported_hash if hash in hashes.keys()
+            )
+            from_connector_hash = from_connector.get_hash(
+                from_base_url / from_url, hash_to_check
+            )
+            expected_hash = object_[hash_to_check]
+            if expected_hash != from_connector_hash:
+                raise DataTransferError(
+                    f"Connector {from_connector} has {from_connector_hash} stored  "
+                    f"as {from_connector_hash} hash for object "
+                    f"{from_base_url/from_url}, expected {expected_hash}."
+                )
+
         common_hash_type = next(
             e for e in to_connector.supported_hash if e in hashes.keys()
         )
         from_hash = hashes[common_hash_type]
-
         # Check if file already exist and has the right hash.
         to_hash = to_connector.get_hash(to_base_url / to_url, common_hash_type)
         if from_hash == to_hash:
@@ -287,15 +307,16 @@ class Transfer:
                 raise DataTransferError("\n\n".join(messages))
 
         # Check hash of the uploaded object.
-        to_hash = to_connector.get_hash(to_base_url / to_url, common_hash_type)
-        if from_hash != to_hash:
-            with suppress(Exception):
-                to_connector.delete(to_base_url, [to_url])
-            raise DataTransferError(
-                f"Hash {common_hash_type} does not match while transfering "
-                f"{from_url} -> {to_base_url/to_url}: using hash type "
-                f"{common_hash_type}: expected {from_hash}, got {to_hash}."
-            )
+        if not skip_final_hash_check:
+            to_hash = to_connector.get_hash(to_base_url / to_url, common_hash_type)
+            if from_hash != to_hash:
+                with suppress(Exception):
+                    to_connector.delete(to_base_url, [to_url])
+                raise DataTransferError(
+                    f"Hash {common_hash_type} does not match while transfering "
+                    f"{from_url} -> {to_base_url/to_url}: using hash type "
+                    f"{common_hash_type}: expected {from_hash}, got {to_hash}."
+                )
 
         # Store computed hashes as metadata for later use.
         to_connector.set_hashes(to_base_url / to_url, hashes)
