@@ -1,17 +1,30 @@
 # pylint: disable=missing-docstring
+import asyncio
 import os
+import threading
 from datetime import timedelta
+from time import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 from asgiref.sync import async_to_sync
-from django.test import SimpleTestCase
+from django.contrib.auth import get_user_model
+from django.db import connection
+from django.db.backends.signals import connection_created
+from django.db.utils import OperationalError
+from django.test import SimpleTestCase, override_settings
 from django.utils.timezone import now
 
 from resolwe.flow.managers import manager
 from resolwe.flow.managers.dispatcher import DEFAULT_CONNECTOR
+from resolwe.flow.managers.listener import ExecutorListener
 from resolwe.flow.managers.listener.authenticator import ZMQAuthenticator
-from resolwe.flow.managers.listener.listener import STALLED_DATA_WARNING, Processor
+from resolwe.flow.managers.listener.listener import (
+    DATABASE_TIMEOUTS_DISPATCH_UID,
+    STALLED_DATA_WARNING,
+    Processor,
+    enable_database_timeouts,
+)
 from resolwe.flow.managers.protocol import WorkerProtocol
 from resolwe.flow.managers.utils import disable_auto_calls
 from resolwe.flow.models import (
@@ -20,6 +33,7 @@ from resolwe.flow.models import (
     DataDependency,
     DescriptorSchema,
     Process,
+    Storage,
     Worker,
 )
 from resolwe.permissions.models import Permission
@@ -702,3 +716,109 @@ class StalledDataRequeueTest(TransactionTestCase):
         with patch.dict(manager.connectors, {DEFAULT_CONNECTOR: connector_mock}):
             manager.run(requeued, ["/bin/sh", "-c", "executor command"])
         connector_mock.submit.assert_not_called()
+
+
+class ListenerDatabaseTimeoutTest(TransactionTestCase):
+    """Test the database timeouts applied to the listener connections."""
+
+    DEFAULT_TIMEOUTS = {"lock_timeout": "30000", "statement_timeout": "600000"}
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(
+            connection_created.disconnect, dispatch_uid=DATABASE_TIMEOUTS_DISPATCH_UID
+        )
+        # Drop the connection of this thread so the following tests start with
+        # a connection without the timeouts.
+        self.addCleanup(connection.close)
+
+    def _current_timeouts(self) -> dict:
+        """Return the timeouts (in milliseconds) of the current connection."""
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT name, setting FROM pg_settings "
+                "WHERE name IN ('lock_timeout', 'statement_timeout')"
+            )
+            return dict(cursor.fetchall())
+
+    def test_run_enables_timeouts(self):
+        """The timeouts are enabled when the listener starts serving."""
+        listener = ExecutorListener()
+        protocol = MagicMock(communicate=AsyncMock())
+        with (
+            patch(
+                "resolwe.flow.managers.listener.listener.enable_database_timeouts"
+            ) as enable,
+            patch.object(
+                ExecutorListener,
+                "listener_protocol",
+                new_callable=PropertyMock,
+                return_value=protocol,
+            ),
+        ):
+
+            async def run():
+                listener.should_stop.set()
+                await listener.run()
+
+            asyncio.run(run())
+        enable.assert_called_once_with()
+        protocol.stop_communicate.assert_called_once_with()
+
+    def test_timeouts_on_new_connection(self):
+        """Connections opened after the listener is created get the timeouts."""
+        enable_database_timeouts()
+        connection.close()
+        self.assertEqual(self._current_timeouts(), self.DEFAULT_TIMEOUTS)
+
+    def test_timeouts_on_open_connection(self):
+        """Connections open when the listener is created get the timeouts."""
+        connection.ensure_connection()
+        enable_database_timeouts()
+        self.assertEqual(self._current_timeouts(), self.DEFAULT_TIMEOUTS)
+
+    @override_settings(
+        LISTENER_DATABASE_LOCK_TIMEOUT=5, LISTENER_DATABASE_STATEMENT_TIMEOUT=None
+    )
+    def test_timeouts_from_settings(self):
+        """The timeouts are read from the settings, None disables a timeout."""
+        enable_database_timeouts()
+        connection.close()
+        self.assertEqual(
+            self._current_timeouts(), {"lock_timeout": "5000", "statement_timeout": "0"}
+        )
+
+    @override_settings(LISTENER_DATABASE_LOCK_TIMEOUT=1)
+    def test_blocked_statement_fails(self):
+        """A statement waiting for a lock fails instead of waiting indefinitely.
+
+        The scenario mirrors a listener handler creating a Storage object while
+        another transaction holds an exclusive lock on the contributor row: the
+        foreign key check of the insert has to wait for that transaction.
+        """
+        enable_database_timeouts()
+        connection.close()
+
+        blocker = connection.copy()
+        blocker.set_autocommit(False)
+        user_table = connection.ops.quote_name(get_user_model()._meta.db_table)
+        with blocker.cursor() as cursor:
+            cursor.execute(
+                f"SELECT id FROM {user_table} WHERE id = %s FOR UPDATE",
+                [self.contributor.pk],
+            )
+        # Release the lock eventually, so a missing timeout fails the test
+        # instead of hanging it.
+        release = threading.Timer(30, blocker.rollback)
+        release.start()
+        try:
+            start = time()
+            with self.assertRaisesMessage(OperationalError, "lock timeout"):
+                Storage.objects.create(
+                    name="Blocked storage", contributor=self.contributor, json={}
+                )
+            self.assertLess(time() - start, 10)
+        finally:
+            release.cancel()
+            blocker.rollback()
+            blocker.close()

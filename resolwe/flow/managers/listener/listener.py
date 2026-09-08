@@ -30,7 +30,8 @@ from channels.layers import get_channel_layer
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import connections, transaction
+from django.db.backends.signals import connection_created
 from django.utils.timezone import now
 
 from resolwe.auditlog.auditmanager import audit_context
@@ -73,6 +74,66 @@ User = get_user_model()
 STALLED_DATA_WARNING = (
     "Processing was requeued: it was interrupted before the task was submitted"
 )
+
+# The timeouts (in seconds) applied to every database connection opened by the
+# listener process. Without them a command handler blocked on a database lock
+# waits indefinitely: it occupies one of the handler slots and the worker gets
+# no reply until its own (much longer) timeout expires, so the actual reason of
+# the failure is never recorded.
+DEFAULT_DATABASE_LOCK_TIMEOUT = 30
+DEFAULT_DATABASE_STATEMENT_TIMEOUT = 600
+DATABASE_TIMEOUTS_DISPATCH_UID = "resolwe.flow.managers.listener.database_timeouts"
+
+
+def set_database_timeouts(sender, connection, **kwargs):
+    """Set the lock and statement timeouts on the given database connection.
+
+    Connected to the ``connection_created`` signal when the listener is
+    created, so the timeouts apply to every database connection the listener
+    process opens (the command handlers run in a thread pool and every thread
+    has its own connection).
+
+    The timeouts are read from the settings ``LISTENER_DATABASE_LOCK_TIMEOUT``
+    and ``LISTENER_DATABASE_STATEMENT_TIMEOUT`` (in seconds). The value
+    ``None`` (or ``0``) disables the respective timeout.
+    """
+    if connection.vendor != "postgresql":
+        return
+    timeouts = {
+        "lock_timeout": getattr(
+            settings, "LISTENER_DATABASE_LOCK_TIMEOUT", DEFAULT_DATABASE_LOCK_TIMEOUT
+        ),
+        "statement_timeout": getattr(
+            settings,
+            "LISTENER_DATABASE_STATEMENT_TIMEOUT",
+            DEFAULT_DATABASE_STATEMENT_TIMEOUT,
+        ),
+    }
+    with connection.cursor() as cursor:
+        for name, seconds in timeouts.items():
+            if seconds:
+                # The parameters are set for the whole session (the last
+                # argument) in milliseconds. The SET command does not accept
+                # query parameters, so set_config is used instead.
+                cursor.execute(
+                    "SELECT set_config(%s, %s, false)",
+                    [name, str(int(seconds * 1000))],
+                )
+
+
+def enable_database_timeouts():
+    """Apply the database timeouts to the connections of this process.
+
+    Future connections are handled through the ``connection_created`` signal,
+    the connections already open in the current thread are updated immediately.
+    """
+    connection_created.connect(
+        set_database_timeouts, dispatch_uid=DATABASE_TIMEOUTS_DISPATCH_UID
+    )
+    for connection in connections.all(initialized_only=True):
+        if connection.connection is not None:
+            set_database_timeouts(type(connection), connection)
+
 
 # Public and private key read from the environment. When the environment does not
 # exist (for instance when running tests), default key is used.
@@ -1214,6 +1275,11 @@ class ExecutorListener:
                 f"Starting Resolwe listener on  '{self.protocol}://{self.hosts}:{self.port}'."
             )
         )
+        # Make sure the command handlers can not block on the database
+        # indefinitely. This is done here and not on the instantiation, since
+        # a listener instance is created on the import of the managers package
+        # in every process, but only the listener process runs it.
+        enable_database_timeouts()
         communicator_future = asyncio.ensure_future(
             self.listener_protocol.communicate()
         )
