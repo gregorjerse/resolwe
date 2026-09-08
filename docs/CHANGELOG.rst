@@ -66,6 +66,10 @@ Fixed
   and long-running commands could be processed twice
 - Fix the ``SOCKET_TIMEOUT`` environment variable being ignored in the
   Python process communicator
+- Raise an exception in the Python process runtime when the reply to a
+  command has the error status. The error text was returned as the requested
+  data before, so the process failed later at an unrelated place and the
+  actual error was lost. The process log methods never abort the process
 
 
 ===================

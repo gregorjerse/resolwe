@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Union
 
-from .communicator import communicator
+from .communicator import CommandError, communicator
 from .descriptor import ProcessDescriptor
 from .fields import Field, RelationDescriptor
 from .models import Data, JSONDescriptor
@@ -157,11 +157,19 @@ class Process(metaclass=ProcessMeta):
 
         The log may contain multiple info, warning and error messages.
 
+        Sending the log never aborts the process: when the data object is
+        already in the error state (the process reported an error and
+        continued), the listener rejects further log entries. The rejection
+        is written to the standard output instead.
+
         :param log: dictionary with keys 'info', 'warning' and 'error'. The
             corresponding values are lists of strings. Some keys may be
             missing.
         """
-        communicator.process_log(log)
+        try:
+            communicator.process_log(log)
+        except CommandError as error:
+            self.logger.warning("Unable to store the process log %s: %s", log, error)
 
     def info(self, *args):
         """Log informational message."""

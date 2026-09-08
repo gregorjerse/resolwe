@@ -9,9 +9,31 @@ from typing import Any, Optional, Type
 # Python process runtime in the container. We have to cover both posibilities
 # while importing socket_utils module.
 try:
-    from .socket_utils import Message, Response, receive_data, send_data
+    from .socket_utils import (
+        Message,
+        Response,
+        ResponseStatus,
+        receive_data,
+        send_data,
+    )
 except (ModuleNotFoundError, ImportError):
-    from socket_utils import Message, Response, receive_data, send_data
+    from socket_utils import (
+        Message,
+        Response,
+        ResponseStatus,
+        receive_data,
+        send_data,
+    )
+
+
+class CommandError(RuntimeError):
+    """The command was not processed successfully.
+
+    Raised when the reply to a command has the error status. The message
+    contains the command name and the error received in the reply, so the
+    actual reason is visible in the process log and stored in the error of
+    the data object.
+    """
 
 
 class Singleton:
@@ -62,13 +84,26 @@ class PythonProcessCommunicator:
 
         When attribute is requested that is not known the method is returned
         that will call the ``send_command`` method with the given arguments
-        and returt the ``message_data`` of the received answer.
+        and return the ``message_data`` of the received answer.
+
+        :raises CommandError: when the reply has the error status. The
+            listener also sets the error status on the reply of a
+            successfully processed command when the data object is in the
+            error state (for instance on the ``process_log`` command that
+            reported the error). Such a reply carries the ``OK`` payload of
+            the handler and is not an error of the command itself.
         """
 
         def call_command(*args):
             if len(args) == 1:
                 args = args[0]
-            return self.send_command(name, args).message_data
+            response = self.send_command(name, args)
+            if (
+                response.status == ResponseStatus.ERROR
+                and response.message_data != "OK"
+            ):
+                raise CommandError(f"Command '{name}' failed: {response.message_data}")
+            return response.message_data
 
         if name.startswith("_"):
             return None
