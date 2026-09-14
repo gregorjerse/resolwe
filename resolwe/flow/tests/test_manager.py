@@ -835,10 +835,7 @@ class ListenerDatabaseTimeoutTest(TransactionTestCase):
 
     @override_settings(LISTENER_DATABASE_LOCK_TIMEOUT=1, LISTENER_DATABASE_RETRIES=4)
     def test_blocked_write_is_retried(self):
-        """A write aborted by the database is repeated.
-
-        The lock blocking the first attempt is released while it waits.
-        """
+        """A write aborted by the database is repeated once the lock is gone."""
         enable_database_timeouts()
         connection.close()
 
@@ -850,29 +847,28 @@ class ListenerDatabaseTimeoutTest(TransactionTestCase):
                 f"SELECT id FROM {user_table} WHERE id = %s FOR UPDATE",
                 [self.contributor.pk],
             )
-        # The lock is released from another thread, so the connection has to
-        # allow sharing it.
-        blocker.inc_thread_sharing()
-        release = threading.Timer(1.5, blocker.rollback)
-        release.start()
 
         attempts = []
 
         @retry_database_writes
         def create_storage():
-            attempts.append(time())
+            attempts.append(len(attempts))
             return Storage.objects.create(
                 name="Blocked storage", contributor=self.contributor, json={}
             )
 
+        # The lock is released while the retry sleeps, so the first attempt
+        # always hits it and the second one never does.
+        release = patch(
+            "resolwe.flow.managers.listener.database.time.sleep",
+            side_effect=lambda seconds: blocker.rollback(),
+        )
         try:
-            storage = create_storage()
+            with release:
+                storage = create_storage()
         finally:
-            release.cancel()
-            release.join()
             blocker.rollback()
             blocker.close()
-            blocker.dec_thread_sharing()
 
         self.assertEqual(len(attempts), 2)
         self.assertTrue(Storage.objects.filter(pk=storage.pk).exists())
