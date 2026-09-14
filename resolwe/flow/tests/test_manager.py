@@ -33,6 +33,8 @@ from resolwe.flow.managers.listener.listener import (
     Processor,
     enable_database_timeouts,
 )
+from resolwe.flow.managers.listener.permission_plugin import permission_manager
+from resolwe.flow.managers.listener.python_process_plugin import PythonProcess
 from resolwe.flow.managers.protocol import WorkerProtocol
 from resolwe.flow.managers.utils import disable_auto_calls
 from resolwe.flow.models import (
@@ -955,6 +957,28 @@ class ListenerDatabaseRetryTest(TransactionTestCase):
             retry_database_writes(failing)()
         self.assertEqual(len(failing.calls), 1)
         sleep.assert_not_called()
+
+    def test_create_object_is_atomic(self):
+        """The created object and its side effects share one transaction."""
+        in_atomic_block = []
+
+        def create(**kwargs):
+            in_atomic_block.append(connection.in_atomic_block)
+            return SimpleNamespace(id=1)
+
+        manager = MagicMock()
+        manager.contributor.return_value = self.contributor
+        message = Message.command(
+            "create_object", ("flow", "Storage", {"json": {}}), client_id=b"0"
+        )
+        with (
+            patch.object(Storage.objects, "create", side_effect=create),
+            patch.object(permission_manager, "can_create"),
+        ):
+            response = PythonProcess().handle_create_object(1, message, manager)
+
+        self.assertEqual(response.message_data, 1)
+        self.assertEqual(in_atomic_block, [True])
 
     @patch("resolwe.flow.managers.listener.database.time.sleep")
     def test_update_output_restores_output(self, sleep):

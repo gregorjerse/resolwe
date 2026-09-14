@@ -119,9 +119,12 @@ class PythonProcess(ListenerPlugin):
         def create_model(model: Type[Model], model_data: Dict[str, Any]):
             """Create the model.
 
-            Retry up to 10 times on slug colision error.
+            Retry up to 10 times on slug colision error. The create runs in
+            one transaction: some models write outside the base save, and a
+            retry after a partial success would duplicate the object.
             """
-            return model.objects.create(**model_data)
+            with transaction.atomic():
+                return model.objects.create(**model_data)
 
         app_name, model_name, model_data = message.message_data
         full_model_name = f"{app_name}.{model_name}"
