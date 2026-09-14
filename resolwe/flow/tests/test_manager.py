@@ -981,6 +981,22 @@ class ListenerDatabaseRetryTest(TransactionTestCase):
         self.assertEqual(in_atomic_block, [True])
 
     @patch("resolwe.flow.managers.listener.database.time.sleep")
+    def test_finish_is_retried(self, sleep):
+        """The final write of a finished data object is repeated as a whole."""
+        data = SimpleNamespace(status="PR", process_error=[], location=MagicMock())
+        manager = MagicMock()
+        manager.data.return_value = data
+        manager._save_data.side_effect = [self._database_error("57014"), None]
+
+        message = Message.command("finish", {"rc": 1}, client_id=b"0")
+        response = BasicCommands().handle_finish(1, message, manager)
+
+        self.assertEqual(response.message_data, "OK")
+        self.assertEqual(manager._save_data.call_count, 2)
+        # The worker is updated only in the attempt that succeeded.
+        manager._update_worker.assert_called_once()
+
+    @patch("resolwe.flow.managers.listener.database.time.sleep")
     def test_update_output_restores_output(self, sleep):
         """A repeated output update starts from the stored output."""
         data = SimpleNamespace(pk=1, id=1, output={})

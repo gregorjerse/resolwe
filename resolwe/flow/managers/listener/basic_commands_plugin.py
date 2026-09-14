@@ -147,13 +147,20 @@ class BasicCommands(ListenerPlugin):
         data.size = data.location.files.aggregate(size=Coalesce(Sum("size"), 0)).get(
             "size"
         )
-        with transaction.atomic():
-            manager._save_data(data, changes)
-            manager._update_worker(data_id, changes={"status": Worker.STATUS_COMPLETED})
-            default_location = data.location.default_storage_location
-            default_location.status = StorageLocation.STATUS_DONE
-            default_location.save(update_fields=["status"])
 
+        @retry_database_writes
+        def finish():
+            """Store the final state of the data object and its worker."""
+            with transaction.atomic():
+                manager._save_data(data, changes)
+                manager._update_worker(
+                    data_id, changes={"status": Worker.STATUS_COMPLETED}
+                )
+                default_location = data.location.default_storage_location
+                default_location.status = StorageLocation.STATUS_DONE
+                default_location.save(update_fields=["status"])
+
+        finish()
         # Only validate objects with DONE status. Validating objects in ERROR
         # status will only cause unnecessary errors to be displayed.
         if data.status == Data.STATUS_DONE:
