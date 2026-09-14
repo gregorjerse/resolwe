@@ -4,6 +4,7 @@ import logging
 import re
 from collections import defaultdict
 from contextlib import suppress
+from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Union
 
@@ -24,6 +25,7 @@ from resolwe.storage.connectors.hasher import StreamHasher
 from resolwe.storage.models import ReferencedPath, StorageLocation
 from resolwe.utils import BraceMessage as __
 
+from .database import retry_database_writes
 from .plugin import ListenerPlugin, listener_plugin_manager
 
 if TYPE_CHECKING:
@@ -428,12 +430,24 @@ class BasicCommands(ListenerPlugin):
             if schema["type"].startswith("basic:json:")
         }
 
-        with transaction.atomic():
-            for key, val in message.message_data.items():
-                if key in storage_fields:
-                    val = manager.save_storage(key, val, data).pk
-                dict_dot(data.output, key, val)
-            manager._save_data(data, ["output"])
+        stored_output = deepcopy(data.output)
+
+        @retry_database_writes
+        def update_output():
+            """Store the output and the storage objects it refers to.
+
+            The output is restored first: the storage ids of an aborted
+            attempt were rolled back with it.
+            """
+            data.output = deepcopy(stored_output)
+            with transaction.atomic():
+                for key, val in message.message_data.items():
+                    if key in storage_fields:
+                        val = manager.save_storage(key, val, data).pk
+                    dict_dot(data.output, key, val)
+                manager._save_data(data, ["output"])
+
+        update_output()
         return message.respond_ok("OK")
 
     def handle_get_files_to_download(
