@@ -3,10 +3,11 @@
 import functools
 import logging
 import time
+from contextlib import contextmanager
 from typing import Callable, TypeVar
 
 from django.conf import settings
-from django.db import DatabaseError
+from django.db import DatabaseError, connection, transaction
 
 from resolwe.utils import BraceMessage as __
 
@@ -18,6 +19,11 @@ DEFAULT_DATABASE_RETRIES = 4
 
 # The sleep (in seconds) before the first retry, doubled on every attempt.
 INITIAL_RETRY_SLEEP = 1
+
+# The statement timeout (in seconds) of the repeated writes, overridden by
+# ``LISTENER_DATABASE_WRITE_TIMEOUT``. Much shorter than the session timeout:
+# the writes are repeated, the reads are not.
+DEFAULT_DATABASE_WRITE_TIMEOUT = 30
 
 # The errors the database raises after it aborted the transaction: nothing the
 # write did was committed, so repeating it can not apply the change twice.
@@ -41,6 +47,26 @@ def is_retriable_database_error(error: BaseException) -> bool:
     cause = getattr(error, "__cause__", None)
     sqlstate = getattr(cause, "sqlstate", None) or getattr(cause, "pgcode", None)
     return sqlstate in RETRIABLE_SQLSTATES
+
+
+@contextmanager
+def write_transaction():
+    """Open a transaction with the write timeout applied to it.
+
+    The timeout lasts until the end of the outermost transaction, so the block
+    must not be nested in another atomic block.
+    """
+    timeout = getattr(
+        settings, "LISTENER_DATABASE_WRITE_TIMEOUT", DEFAULT_DATABASE_WRITE_TIMEOUT
+    )
+    with transaction.atomic():
+        if timeout and connection.vendor == "postgresql":
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT set_config('statement_timeout', %s, true)",
+                    [str(int(timeout * 1000))],
+                )
+        yield
 
 
 def retry_database_writes(func: FunctionType) -> FunctionType:

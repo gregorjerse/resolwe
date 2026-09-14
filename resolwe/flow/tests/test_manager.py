@@ -26,6 +26,7 @@ from resolwe.flow.managers.listener.database import (
     DEFAULT_DATABASE_RETRIES,
     is_retriable_database_error,
     retry_database_writes,
+    write_transaction,
 )
 from resolwe.flow.managers.listener.listener import (
     DATABASE_TIMEOUTS_DISPATCH_UID,
@@ -797,6 +798,21 @@ class ListenerDatabaseTimeoutTest(TransactionTestCase):
         self.assertEqual(
             self._current_timeouts(), {"lock_timeout": "5000", "statement_timeout": "0"}
         )
+
+    def test_write_timeout_is_local(self):
+        """The write timeout applies inside the write transaction only."""
+        enable_database_timeouts()
+        connection.close()
+        with write_transaction():
+            self.assertEqual(self._current_timeouts()["statement_timeout"], "30000")
+        self.assertEqual(self._current_timeouts()["statement_timeout"], "600000")
+
+    @override_settings(LISTENER_DATABASE_WRITE_TIMEOUT=1)
+    def test_write_timeout_cancels_statement(self):
+        """A write running longer than the write timeout is aborted."""
+        with self.assertRaisesMessage(OperationalError, "statement timeout"):
+            with write_transaction(), connection.cursor() as cursor:
+                cursor.execute("SELECT pg_sleep(2)")
 
     @override_settings(LISTENER_DATABASE_LOCK_TIMEOUT=1)
     def test_blocked_statement_fails(self):

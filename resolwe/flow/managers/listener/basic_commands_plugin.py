@@ -25,7 +25,7 @@ from resolwe.storage.connectors.hasher import StreamHasher
 from resolwe.storage.models import ReferencedPath, StorageLocation
 from resolwe.utils import BraceMessage as __
 
-from .database import retry_database_writes
+from .database import retry_database_writes, write_transaction
 from .plugin import ListenerPlugin, listener_plugin_manager
 
 if TYPE_CHECKING:
@@ -151,7 +151,7 @@ class BasicCommands(ListenerPlugin):
         @retry_database_writes
         def finish():
             """Store the final state of the data object and its worker."""
-            with transaction.atomic():
+            with write_transaction():
                 manager._save_data(data, changes)
                 manager._update_worker(
                     data_id, changes={"status": Worker.STATUS_COMPLETED}
@@ -447,7 +447,7 @@ class BasicCommands(ListenerPlugin):
             attempt were rolled back with it.
             """
             data.output = deepcopy(stored_output)
-            with transaction.atomic():
+            with write_transaction():
                 for key, val in message.message_data.items():
                     if key in storage_fields:
                         val = manager.save_storage(key, val, data).pk

@@ -13,7 +13,6 @@ from django.apps import apps
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.postgres.fields.jsonb import JSONField as JSONFieldb
-from django.db import transaction
 from django.db.models import ForeignKey, JSONField, ManyToManyField, Model, Q, Value
 from django.db.models.functions import Concat
 
@@ -28,7 +27,7 @@ from resolwe.storage.connectors import connectors
 from resolwe.storage.models import FileStorage
 from resolwe.test.utils import is_testing
 
-from .database import retry_database_writes
+from .database import retry_database_writes, write_transaction
 from .plugin import ListenerPlugin, listener_plugin_manager
 
 if TYPE_CHECKING:
@@ -123,7 +122,7 @@ class PythonProcess(ListenerPlugin):
             one transaction: some models write outside the base save, and a
             retry after a partial success would duplicate the object.
             """
-            with transaction.atomic():
+            with write_transaction():
                 return model.objects.create(**model_data)
 
         app_name, model_name, model_data = message.message_data
@@ -312,7 +311,7 @@ class PythonProcess(ListenerPlugin):
             """Apply the changes inside a transaction, so a retry can repeat them."""
             # Update all fields except m2m.
             update_fields = []
-            with transaction.atomic():
+            with write_transaction():
                 for field_name, field_value in mapping.items():
                     # Not exactly sure how to handle this. Output is a JSONField
                     # and is only updated, other JSON fields should probably be
