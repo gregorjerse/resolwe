@@ -110,11 +110,13 @@ def retry_database_writes(func: FunctionType) -> FunctionType:
             ),
         )
         sleep = INITIAL_RETRY_SLEEP
-        for attempt in range(1, attempts + 1):
+        attempt = 0
+        while True:
+            attempt += 1
             try:
                 return func(*args, **kwargs)
             except DatabaseError as error:
-                if attempt == attempts or not is_retriable_database_error(error):
+                if attempt >= attempts or not is_retriable_database_error(error):
                     raise
                 pause = sleep * random.uniform(*RETRY_SLEEP_SPREAD)
                 logger.warning(
