@@ -910,8 +910,12 @@ class DatabaseDriverError(Exception):
         self.sqlstate = sqlstate
 
 
-class ListenerDatabaseRetryTest(TransactionTestCase):
-    """Test repeating the database writes the database aborts."""
+class ListenerDatabaseWriteTest(TransactionTestCase):
+    """Test the database writes of the listener command handlers.
+
+    The writes are repeated when the database aborts them, and every handler
+    performs its write as one transaction.
+    """
 
     def _database_error(self, sqlstate: str) -> OperationalError:
         """Return a database error with the given sqlstate."""
