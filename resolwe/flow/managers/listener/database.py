@@ -13,9 +13,9 @@ from resolwe.utils import BraceMessage as __
 
 logger = logging.getLogger(__name__)
 
-# The number of attempts, overridden by ``LISTENER_DATABASE_RETRIES``. The
-# value ``1`` performs no retries.
-DEFAULT_DATABASE_RETRIES = 4
+# The number of attempts of a write, overridden by
+# ``LISTENER_DATABASE_WRITE_ATTEMPTS``. The value ``1`` performs no retries.
+DEFAULT_DATABASE_WRITE_ATTEMPTS = 4
 
 # The sleep (in seconds) before the first retry, doubled on every attempt.
 INITIAL_RETRY_SLEEP = 1
@@ -81,7 +81,12 @@ def retry_database_writes(func: FunctionType) -> FunctionType:
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         attempts = max(
-            1, getattr(settings, "LISTENER_DATABASE_RETRIES", DEFAULT_DATABASE_RETRIES)
+            1,
+            getattr(
+                settings,
+                "LISTENER_DATABASE_WRITE_ATTEMPTS",
+                DEFAULT_DATABASE_WRITE_ATTEMPTS,
+            ),
         )
         sleep = INITIAL_RETRY_SLEEP
         for attempt in range(1, attempts + 1):

@@ -23,7 +23,7 @@ from resolwe.flow.managers.listener import ExecutorListener
 from resolwe.flow.managers.listener.authenticator import ZMQAuthenticator
 from resolwe.flow.managers.listener.basic_commands_plugin import BasicCommands
 from resolwe.flow.managers.listener.database import (
-    DEFAULT_DATABASE_RETRIES,
+    DEFAULT_DATABASE_WRITE_ATTEMPTS,
     is_retriable_database_error,
     retry_database_writes,
     write_transaction,
@@ -849,7 +849,9 @@ class ListenerDatabaseTimeoutTest(TransactionTestCase):
             blocker.rollback()
             blocker.close()
 
-    @override_settings(LISTENER_DATABASE_LOCK_TIMEOUT=1, LISTENER_DATABASE_RETRIES=4)
+    @override_settings(
+        LISTENER_DATABASE_LOCK_TIMEOUT=1, LISTENER_DATABASE_WRITE_ATTEMPTS=4
+    )
     def test_blocked_write_is_retried(self):
         """A write aborted by the database is repeated once the lock is gone."""
         enable_database_timeouts()
@@ -950,9 +952,9 @@ class ListenerDatabaseRetryTest(TransactionTestCase):
         failing = self._failing(self._database_error("57014"), failures=100)
         with self.assertRaisesMessage(OperationalError, "aborted"):
             retry_database_writes(failing)()
-        self.assertEqual(len(failing.calls), DEFAULT_DATABASE_RETRIES)
+        self.assertEqual(len(failing.calls), DEFAULT_DATABASE_WRITE_ATTEMPTS)
 
-    @override_settings(LISTENER_DATABASE_RETRIES=2)
+    @override_settings(LISTENER_DATABASE_WRITE_ATTEMPTS=2)
     @patch("resolwe.flow.managers.listener.database.time.sleep")
     def test_attempts_from_settings(self, sleep):
         """The number of attempts is read from the settings."""

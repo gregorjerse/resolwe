@@ -19,8 +19,8 @@ Added
   command handler blocked on the database fails with the database error
   instead of waiting indefinitely
 - Repeat the database writes of the listener command handlers when the
-  database aborts them, at most ``LISTENER_DATABASE_RETRIES`` times
-  (default ``4``). The writes run with the shorter
+  database aborts them, making at most ``LISTENER_DATABASE_WRITE_ATTEMPTS``
+  attempts (default ``4``). The writes run with the shorter
   ``LISTENER_DATABASE_WRITE_TIMEOUT`` (default ``30`` seconds)
 
 Changed
