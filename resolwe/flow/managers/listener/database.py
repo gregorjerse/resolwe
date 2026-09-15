@@ -2,6 +2,7 @@
 
 import functools
 import logging
+import random
 import time
 from contextlib import contextmanager
 from typing import Callable, TypeVar
@@ -17,8 +18,11 @@ logger = logging.getLogger(__name__)
 # ``LISTENER_DATABASE_WRITE_ATTEMPTS``. The value ``1`` performs no retries.
 DEFAULT_DATABASE_WRITE_ATTEMPTS = 4
 
-# The sleep (in seconds) before the first retry, doubled on every attempt.
+# The sleep (in seconds) before the first retry, doubled on every attempt and
+# spread by a random factor from the range below, so the handlers that failed
+# together do not retry together.
 INITIAL_RETRY_SLEEP = 1
+RETRY_SLEEP_SPREAD = (0.5, 1.5)
 
 # The statement timeout (in seconds) of the repeated writes, overridden by
 # ``LISTENER_DATABASE_WRITE_TIMEOUT``. Much shorter than the session timeout:
@@ -75,6 +79,12 @@ def retry_database_writes(func: FunctionType) -> FunctionType:
     The decorated function must contain the entire transaction: inside an
     atomic block every attempt fails immediately.
 
+    The attempts run in the thread of the command handler, so a repeated write
+    occupies its handler slot for at most the number of attempts times the
+    write timeout, plus the sleeps in between. The liveness probe is answered
+    on the event loop before the handlers, so a listener whose handler threads
+    all wait for the database still reports alive.
+
     :raises DatabaseError: the error of the last attempt.
     """
 
@@ -95,17 +105,18 @@ def retry_database_writes(func: FunctionType) -> FunctionType:
             except DatabaseError as error:
                 if attempt == attempts or not is_retriable_database_error(error):
                     raise
+                pause = sleep * random.uniform(*RETRY_SLEEP_SPREAD)
                 logger.warning(
                     __(
-                        "Database error in '{}' (attempt {} of {}), retrying in {}s: {}",
+                        "Database error in '{}' (attempt {} of {}), retrying in {:.1f}s: {}",
                         func.__qualname__,
                         attempt,
                         attempts,
-                        sleep,
+                        pause,
                         error,
                     )
                 )
-                time.sleep(sleep)
+                time.sleep(pause)
                 sleep *= 2
 
     return wrapper

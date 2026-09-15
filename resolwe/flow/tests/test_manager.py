@@ -937,14 +937,17 @@ class ListenerDatabaseRetryTest(TransactionTestCase):
         self.assertFalse(is_retriable_database_error(self._database_error("08006")))
         self.assertFalse(is_retriable_database_error(OperationalError("no cause")))
 
+    @patch("resolwe.flow.managers.listener.database.random.uniform", return_value=1.0)
     @patch("resolwe.flow.managers.listener.database.time.sleep")
-    def test_retries_until_success(self, sleep):
+    def test_retries_until_success(self, sleep, uniform):
         """The write is repeated until it succeeds."""
         failing = self._failing(self._database_error("57014"), failures=2)
         self.assertEqual(retry_database_writes(failing)(), "done")
         self.assertEqual(len(failing.calls), 3)
-        # The sleep between the attempts is doubled every time.
+        # The sleep between the attempts is doubled every time and spread by a
+        # random factor.
         self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2])
+        uniform.assert_called_with(0.5, 1.5)
 
     @patch("resolwe.flow.managers.listener.database.time.sleep")
     def test_gives_up_after_all_attempts(self, sleep):
