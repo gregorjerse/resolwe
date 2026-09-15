@@ -1011,6 +1011,28 @@ class ListenerDatabaseRetryTest(TransactionTestCase):
         manager._update_worker.assert_called_once()
 
     @patch("resolwe.flow.managers.listener.database.time.sleep")
+    def test_update_status_is_retried(self, sleep):
+        """The status update of a data object is repeated as a whole."""
+        data = SimpleNamespace(status=Data.STATUS_WAITING)
+        manager = MagicMock()
+        manager.get_data_fields.return_value = Data.STATUS_WAITING
+        manager._choose_worst_status.return_value = Data.STATUS_PROCESSING
+        manager.data.return_value = data
+        manager._save_data.side_effect = [self._database_error("57014"), None]
+
+        message = Message.command(
+            "update_status", Data.STATUS_PROCESSING, client_id=b"0"
+        )
+        response = BasicCommands().handle_update_status(1, message, manager)
+
+        self.assertEqual(response.message_data, Data.STATUS_PROCESSING)
+        self.assertEqual(manager._save_data.call_count, 2)
+        # The worker is updated only in the attempt that succeeded.
+        manager._update_worker.assert_called_once_with(
+            1, changes={"status": Worker.STATUS_PROCESSING}
+        )
+
+    @patch("resolwe.flow.managers.listener.database.time.sleep")
     def test_update_output_restores_output(self, sleep):
         """A repeated output update starts from the stored output."""
         data = SimpleNamespace(pk=1, id=1, output={})

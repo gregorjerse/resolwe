@@ -256,28 +256,34 @@ class BasicCommands(ListenerPlugin):
             referenced_file["path"]: referenced_file
             for referenced_file in referenced_files
         }
-        updated_paths = set()
-        with transaction.atomic():
-            # Bulk update existing paths.
-            database_paths = ReferencedPath.objects.filter(
-                storage_locations=storage_location, path__in=paths.keys()
-            )
-            for database_path in database_paths:
-                updated_paths.add(database_path.path)
-                for key, value in paths[database_path.path].items():
-                    setattr(database_path, key, value)
-            ReferencedPath.objects.bulk_update(database_paths, update_fields)
-            logger.debug("Updated %s.", database_paths.values())
 
-            # Bulk insert new paths.
-            created_paths = [
-                ReferencedPath(**referenced_file)
-                for referenced_file in referenced_files
-                if referenced_file["path"] not in updated_paths
-            ]
-            ReferencedPath.objects.bulk_create(created_paths)
-            storage_location.files.add(*created_paths)
-            logger.debug("Created %s.", [e.path for e in created_paths])
+        @retry_database_writes
+        def store_paths():
+            """Update the known paths and insert the new ones."""
+            updated_paths = set()
+            with write_transaction():
+                # Bulk update existing paths.
+                database_paths = ReferencedPath.objects.filter(
+                    storage_locations=storage_location, path__in=paths.keys()
+                )
+                for database_path in database_paths:
+                    updated_paths.add(database_path.path)
+                    for key, value in paths[database_path.path].items():
+                        setattr(database_path, key, value)
+                ReferencedPath.objects.bulk_update(database_paths, update_fields)
+                logger.debug("Updated %s.", database_paths.values())
+
+                # Bulk insert new paths.
+                created_paths = [
+                    ReferencedPath(**referenced_file)
+                    for referenced_file in referenced_files
+                    if referenced_file["path"] not in updated_paths
+                ]
+                ReferencedPath.objects.bulk_create(created_paths)
+                storage_location.files.add(*created_paths)
+                logger.debug("Created %s.", [e.path for e in created_paths])
+
+        store_paths()
 
         # Extract directories from paths and make sure they are also stored in the
         # database.
@@ -374,17 +380,21 @@ class BasicCommands(ListenerPlugin):
             data = manager.data(data_id)
             data.status = new_status
 
-            with transaction.atomic():
-                manager._save_data(data, ["status"])
-                if new_status == Data.STATUS_PREPARING:
-                    manager._update_worker(
-                        data_id, changes={"status": Worker.STATUS_PREPARING}
-                    )
-                elif new_status == Data.STATUS_PROCESSING:
-                    manager._update_worker(
-                        data_id, changes={"status": Worker.STATUS_PROCESSING}
-                    )
+            @retry_database_writes
+            def update_status():
+                """Store the new status of the data object and its worker."""
+                with write_transaction():
+                    manager._save_data(data, ["status"])
+                    if new_status == Data.STATUS_PREPARING:
+                        manager._update_worker(
+                            data_id, changes={"status": Worker.STATUS_PREPARING}
+                        )
+                    elif new_status == Data.STATUS_PROCESSING:
+                        manager._update_worker(
+                            data_id, changes={"status": Worker.STATUS_PROCESSING}
+                        )
 
+            update_status()
             if new_status == Data.STATUS_ERROR:
                 logger.error(
                     __(
@@ -479,20 +489,24 @@ class BasicCommands(ListenerPlugin):
         """
         storage_location_id = message.message_data[ExecutorProtocol.STORAGE_LOCATION_ID]
         lock = message.message_data.get(ExecutorProtocol.DOWNLOAD_STARTED_LOCK, False)
-        with transaction.atomic():
-            query = StorageLocation.all_objects.select_for_update().filter(
-                pk=storage_location_id
-            )
-            location_status = query.values_list("status", flat=True).get()
-            return_status = {
-                StorageLocation.STATUS_PREPARING: ExecutorProtocol.DOWNLOAD_STARTED,
-                StorageLocation.STATUS_UPLOADING: ExecutorProtocol.DOWNLOAD_IN_PROGRESS,
-                StorageLocation.STATUS_DONE: ExecutorProtocol.DOWNLOAD_FINISHED,
-            }[location_status]
 
-            if location_status == StorageLocation.STATUS_PREPARING and lock:
-                query.update(status=StorageLocation.STATUS_UPLOADING)
+        @retry_database_writes
+        def claim_location() -> str:
+            """Return the status of the location, claiming it when asked to."""
+            with write_transaction():
+                query = StorageLocation.all_objects.select_for_update().filter(
+                    pk=storage_location_id
+                )
+                location_status = query.values_list("status", flat=True).get()
+                if location_status == StorageLocation.STATUS_PREPARING and lock:
+                    query.update(status=StorageLocation.STATUS_UPLOADING)
+                return location_status
 
+        return_status = {
+            StorageLocation.STATUS_PREPARING: ExecutorProtocol.DOWNLOAD_STARTED,
+            StorageLocation.STATUS_UPLOADING: ExecutorProtocol.DOWNLOAD_IN_PROGRESS,
+            StorageLocation.STATUS_DONE: ExecutorProtocol.DOWNLOAD_FINISHED,
+        }[claim_location()]
         return message.respond_ok(return_status)
 
     def handle_download_aborted(
@@ -517,10 +531,16 @@ class BasicCommands(ListenerPlugin):
         default_storage_location = (
             storage_location.file_storage.default_storage_location
         )
-        with transaction.atomic():
-            storage_location.files.add(*default_storage_location.files.all())
-            storage_location.status = StorageLocation.STATUS_DONE
-            storage_location.save()
+
+        @retry_database_writes
+        def finish_download():
+            """Add the files of the default location and mark the download done."""
+            with write_transaction():
+                storage_location.files.add(*default_storage_location.files.all())
+                storage_location.status = StorageLocation.STATUS_DONE
+                storage_location.save()
+
+        finish_download()
         return message.respond_ok("OK")
 
     def handle_annotate(
