@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 from asgiref.sync import async_to_sync
 from django.contrib.auth import get_user_model
-from django.db import connection
+from django.db import connection, transaction
 from django.db.backends.signals import connection_created
 from django.db.utils import OperationalError
 from django.test import SimpleTestCase, override_settings
@@ -806,6 +806,15 @@ class ListenerDatabaseTimeoutTest(TransactionTestCase):
         with write_transaction():
             self.assertEqual(self._current_timeouts()["statement_timeout"], "30000")
         self.assertEqual(self._current_timeouts()["statement_timeout"], "600000")
+
+    def test_write_transaction_rejects_nesting(self):
+        """The write transaction refuses to run inside another transaction."""
+        with transaction.atomic():
+            with self.assertRaisesMessage(RuntimeError, "outermost"):
+                with write_transaction():
+                    pass  # pragma: no cover
+            # The outer transaction is still usable.
+            self.assertFalse(Storage.objects.filter(name="Nested").exists())
 
     @override_settings(LISTENER_DATABASE_WRITE_TIMEOUT=1)
     def test_write_timeout_cancels_statement(self):

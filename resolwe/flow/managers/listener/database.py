@@ -57,9 +57,14 @@ def is_retriable_database_error(error: BaseException) -> bool:
 def write_transaction():
     """Open a transaction with the write timeout applied to it.
 
-    The timeout lasts until the end of the outermost transaction, so the block
-    must not be nested in another atomic block.
+    The block must open the outermost transaction. Nested in another atomic
+    block it would be a savepoint, and the timeout, which lasts until the end
+    of the transaction, would shorten the rest of the outer one.
+
+    :raises RuntimeError: when a transaction is already open.
     """
+    if connection.in_atomic_block:
+        raise RuntimeError("The write transaction must be the outermost one.")
     timeout = getattr(
         settings, "LISTENER_DATABASE_WRITE_TIMEOUT", DEFAULT_DATABASE_WRITE_TIMEOUT
     )
@@ -76,8 +81,9 @@ def write_transaction():
 def retry_database_writes(func: FunctionType) -> FunctionType:
     """Repeat the decorated write when the database aborts it.
 
-    The decorated function must contain the entire transaction: inside an
-    atomic block every attempt fails immediately.
+    The decorated function must open the outermost transaction, see
+    :func:`write_transaction`: a failed statement leaves an open transaction
+    aborted, so inside one every further attempt would fail immediately.
 
     The attempts run in the thread of the command handler, so a repeated write
     occupies its handler slot for at most the number of attempts times the
