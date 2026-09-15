@@ -26,7 +26,8 @@ RETRY_SLEEP_SPREAD = (0.5, 1.5)
 
 # The statement timeout (in seconds) of the repeated writes, overridden by
 # ``LISTENER_DATABASE_WRITE_TIMEOUT``. Much shorter than the session timeout:
-# the writes are repeated, the reads are not.
+# the writes are repeated, the reads are not. A falsy value keeps the session
+# timeout for the writes as well.
 DEFAULT_DATABASE_WRITE_TIMEOUT = 30
 
 # The errors the database raises after it aborted the transaction: nothing the
@@ -60,6 +61,10 @@ def write_transaction():
     The block must open the outermost transaction. Nested in another atomic
     block it would be a savepoint, and the timeout, which lasts until the end
     of the transaction, would shorten the rest of the outer one.
+
+    A falsy ``LISTENER_DATABASE_WRITE_TIMEOUT`` leaves the session statement
+    timeout in place. Unlike the session settings, it does not disable the
+    timeout.
 
     :raises RuntimeError: when a transaction is already open.
     """
