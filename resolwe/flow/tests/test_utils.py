@@ -7,6 +7,7 @@ from django.core.exceptions import ValidationError
 from rest_framework.response import Response
 
 from resolwe.flow.managers.workload_connectors.kubernetes import (
+    Connector,
     sanitize_kubernetes_label,
 )
 from resolwe.flow.models import Data, Process
@@ -209,3 +210,21 @@ class KubernetesTestCase(TestCase):
 
         label = "_" * 100 + "I am too long"
         self.assertEqual("I-am-too-long", sanitize_kubernetes_label(label))
+
+    def test_init_container_resources(self):
+        connector = Connector()
+        self.assertEqual(
+            connector._init_container_resources(),
+            {
+                "limits": {"memory": "2Gi", "cpu": 2},
+                "requests": {"memory": "1Gi", "cpu": 1},
+            },
+        )
+        with self.settings(
+            FLOW_KUBERNETES_INIT_CONTAINER_LIMITS={"cpu": 4},
+            FLOW_KUBERNETES_INIT_CONTAINER_REQUESTS={"cpu": 3},
+        ):
+            self.assertEqual(
+                connector._init_container_resources(),
+                {"limits": {"cpu": 4}, "requests": {"cpu": 3}},
+            )

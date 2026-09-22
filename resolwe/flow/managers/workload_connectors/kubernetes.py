@@ -633,6 +633,29 @@ class Connector(BaseConnector):
         job_type = dict(Process.SCHEDULING_CLASS_CHOICES)[data.process.scheduling_class]
         return default | settings.FLOW_KUBERNETES_OVERCOMMIT.get(job_type, {})
 
+    def _init_container_resources(self) -> dict:
+        """Get the resources of the init container.
+
+        Without resources the container runs with the minimal CPU share and is
+        the first OOM victim on the node. The download needs far less than the
+        processing container: 2Gi covers the three download workers with their
+        ten in-flight 8 MiB parts each plus the io queues. The settings
+        ``FLOW_KUBERNETES_INIT_CONTAINER_LIMITS`` and
+        ``FLOW_KUBERNETES_INIT_CONTAINER_REQUESTS`` override the defaults.
+        """
+        return {
+            "limits": getattr(
+                settings,
+                "FLOW_KUBERNETES_INIT_CONTAINER_LIMITS",
+                {"memory": "2Gi", "cpu": 2},
+            ),
+            "requests": getattr(
+                settings,
+                "FLOW_KUBERNETES_INIT_CONTAINER_REQUESTS",
+                {"memory": "1Gi", "cpu": 1},
+            ),
+        }
+
     def start(self, data: Data, listener_connection: Tuple[str, str, str]):
         """Start process execution.
 
@@ -836,6 +859,7 @@ class Connector(BaseConnector):
                                 "workingDir": "/",
                                 "command": ["/usr/local/bin/python3"],
                                 "args": ["-m", "executors.init_container"],
+                                "resources": self._init_container_resources(),
                                 "securityContext": {"privileged": True},
                                 "volumeMounts": self._init_container_mountpoints(),
                                 "env": container_environment,

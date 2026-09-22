@@ -6,6 +6,19 @@ All notable changes to this project are documented in this file.
 This project adheres to `Semantic Versioning <http://semver.org/>`_.
 
 
+==========
+Unreleased
+==========
+
+Changed
+-------
+- The init container requests 1 CPU and 1Gi of memory and is limited to 2 CPUs
+  and 2Gi instead of running without resources, i.e. with the minimal CPU
+  share and the highest OOM score; the settings
+  ``FLOW_KUBERNETES_INIT_CONTAINER_REQUESTS`` and
+  ``FLOW_KUBERNETES_INIT_CONTAINER_LIMITS`` override the defaults
+
+
 ===================
 45.2.0 - 2026-09-16
 ===================
