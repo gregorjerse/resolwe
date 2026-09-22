@@ -12,7 +12,7 @@ import shutil
 import sys
 from collections import defaultdict
 from contextlib import suppress
-from typing import Any
+from typing import Any, Optional
 
 import zmq
 import zmq.asyncio
@@ -128,7 +128,7 @@ async def transfer_inputs(communicator: BaseCommunicator, missing_data: dict):
                 inputs_connector,
                 threads,
             )
-    except:
+    except Exception:
         logger.exception("Exception preparing inputs")
         error_message = (
             f"Preparing inputs {objects_to_transfer[connector_name]} from "
@@ -156,14 +156,19 @@ async def download_to_location(
         max_threads,
     )
     transfer = Transfer(from_connector, to_connector)
-    # Start futures and evaluate their results. If exception occured it will
-    # be re-raised.
-    for task in await async_paralelize(
-        objects=files,
-        worker=lambda objects: transfer.transfer_chunk(None, objects),
-        loop=asyncio.get_running_loop(),
-        max_threads=max_threads,
-    ):
+    try:
+        tasks = await async_paralelize(
+            objects=files,
+            worker=lambda objects: transfer.transfer_chunk(None, objects),
+            loop=asyncio.get_running_loop(),
+            max_threads=max_threads,
+        )
+    except asyncio.CancelledError:
+        # The worker threads cannot be cancelled: abort the transfer to stop them.
+        transfer.abort()
+        raise
+    # Evaluate the results. If exception occured it will be re-raised.
+    for task in tasks:
         task.result()
 
 
@@ -234,12 +239,26 @@ def initialize_secrets(secrets: dict[str, Any]):
 class InitProtocol(BaseProtocol):
     """Protocol class."""
 
+    def __init__(
+        self,
+        communicator: BaseCommunicator,
+        logger: logging.Logger,
+        main_task: Optional[asyncio.Task],
+    ):
+        """Initialize."""
+        super().__init__(communicator, logger)
+        self.main_task = main_task
+
     async def post_terminate(self, message: Message, identity: PeerIdentity):
-        """Handle post-terminate command."""
+        """Handle post-terminate command.
+
+        Only the main task is cancelled: it aborts the transfer and stops the
+        heartbeat and the communicator on its way out.
+        """
         logger.debug("Init container received terminate request, terminating.")
         await error("Init container received terminating request.", self.communicator)
-        for task in asyncio.all_tasks():
-            task.cancel()
+        if self.main_task is not None:
+            self.main_task.cancel()
 
     async def transfer_missing_data(self):
         """Transfer missing data.
@@ -325,7 +344,7 @@ async def main():
     :raises asyncio.exceptions.CancelledError: when task is terminated.
     """
     communicator = _get_communicator()
-    protocol = InitProtocol(communicator, logger)
+    protocol = InitProtocol(communicator, logger, asyncio.current_task())
     communicate_task = asyncio.create_task(protocol.communicate())
     heartbeat_task = asyncio.create_task(send_heartbeat(communicator))
 
@@ -342,6 +361,9 @@ async def main():
         await protocol.transfer_missing_data()
         # Notify the manager that init is completed.
         await communicator.init_completed("")
+    except asyncio.CancelledError:
+        logger.info("Init container terminated.")
+        raise
     except PreviousDataExistsError:
         logger.error("Previous run data exists, aborting processing.")
         raise

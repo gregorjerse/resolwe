@@ -1,11 +1,17 @@
 # pylint: disable=missing-docstring
+import shutil
 from pathlib import Path
 from time import time
 from unittest.mock import MagicMock, patch
 
-from resolwe.storage.connectors import Transfer, connectors
+from resolwe.storage.connectors import (
+    LocalFilesystemConnector,
+    Transfer,
+    connectors,
+)
 from resolwe.storage.connectors.exceptions import DataTransferError
 from resolwe.storage.connectors.transfer import retry_on_transfer_error
+from resolwe.storage.connectors.utils import get_transfer_object
 from resolwe.test import TestCase
 
 
@@ -74,3 +80,53 @@ class TransferTest(TestCase):
             t.transfer_objects(
                 "test_url", [{"path": "1"}, {"path": "2"}], max_threads=1
             )
+
+    def test_abort_no_retry(self):
+        t = Transfer(self.local, self.local)
+        calls = []
+
+        @retry_on_transfer_error
+        def transfer(self, *args, **kwargs):
+            calls.append(args)
+            raise DataTransferError()
+
+        with patch.object(Transfer, "transfer", transfer):
+            t.abort()
+            with self.assertRaises(DataTransferError):
+                t.transfer("base", {}, "base", "1")
+        self.assertEqual(len(calls), 1)
+
+    def test_abort_stops_before_next_object(self):
+        t = Transfer(self.local, self.local)
+
+        def transfer(*args, **kwargs):
+            t.abort()
+            return True
+
+        with patch.object(Transfer, "transfer", side_effect=transfer) as transfer_mock:
+            with self.assertRaisesRegex(DataTransferError, "aborted"):
+                t.transfer_chunk(Path("base"), [{"path": "1"}, {"path": "2"}])
+        transfer_mock.assert_called_once()
+
+    def test_abort_closes_stream(self):
+        base = self.local.base_path / "abort_test"
+        base.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        source = base / "source.txt"
+        source.write_bytes(b"data")
+        entry = get_transfer_object(source, base)
+        entry.update({"from_base_url": "abort_test", "to_base_url": "abort_copy"})
+        destination = self.local.base_path / "abort_copy" / "source.txt"
+        t = Transfer(self.local, self.local)
+
+        def push(connector, stream, url, chunk_size=None, hashes=None):
+            self.assertFalse(stream.closed)
+            t.abort()
+            self.assertTrue(stream.closed)
+            # A real push fails reading the closed stream.
+            stream.read(1)
+
+        with patch.object(LocalFilesystemConnector, "push", push):
+            with self.assertRaisesRegex(DataTransferError, "aborted"):
+                t.transfer_chunk(Path(""), [entry])
+        self.assertFalse(destination.exists())

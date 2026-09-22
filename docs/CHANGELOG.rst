@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file.
 This project adheres to `Semantic Versioning <http://semver.org/>`_.
 
 
+==========
+Unreleased
+==========
+
+Fixed
+-----
+- Fix the init container waiting for the running downloads when the processing
+  is terminated: the transfer is aborted, the download of a shared storage
+  location is released and the container exits
+
+
 ===================
 45.2.0 - 2026-09-16
 ===================
