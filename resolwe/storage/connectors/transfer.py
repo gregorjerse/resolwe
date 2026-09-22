@@ -23,23 +23,31 @@ if TYPE_CHECKING:
     from os import PathLike
 
 try:
-    from google.api_core.exceptions import ServiceUnavailable
+    from google.api_core.exceptions import ServerError, TooManyRequests
     from google.resumable_media.common import DataCorruption
 
-    gcs_exceptions = [DataCorruption, ServiceUnavailable]
+    gcs_exceptions = [DataCorruption, ServerError, TooManyRequests]
 except ModuleNotFoundError:
     gcs_exceptions = []
 
 try:
-    from botocore.exceptions import ClientError, EndpointConnectionError
+    from botocore.exceptions import ClientError
+    from botocore.exceptions import ConnectionError as BotoConnectionError
+    from botocore.exceptions import HTTPClientError, IncompleteReadError
 
-    boto_exceptions = [ClientError, EndpointConnectionError]
+    boto_exceptions = [
+        ClientError,
+        BotoConnectionError,
+        HTTPClientError,
+        IncompleteReadError,
+    ]
 except ModuleNotFoundError:
     boto_exceptions = []
 
 
 logger = logging.getLogger(__name__)
-ERROR_MAX_RETRIES = 3
+# Attempts with 1, 2, ..., 32, 60 seconds between them: about two minutes.
+ERROR_MAX_RETRIES = 8
 ERROR_INITIAL_TIMEOUT = 1  # In seconds.
 ERROR_MAX_TIMEOUT = 60  # In seconds.
 transfer_exceptions = tuple(
@@ -52,31 +60,29 @@ transfer_exceptions = tuple(
 
 @wrapt.decorator
 def retry_on_transfer_error(wrapped, instance, args, kwargs):
-    """Retry on transfer error.
+    """Retry on transfer error with exponential backoff.
 
-    The call is not retried when the transfer instance is aborted.
+    The call is not retried when the transfer instance is aborted and the
+    wait between the attempts ends on abort. The last failure is raised.
     """
     for retry in range(1, ERROR_MAX_RETRIES + 1):
         try:
             return wrapped(*args, **kwargs)
-        except transfer_exceptions:
-            if getattr(instance, "aborted", False):
+        except transfer_exceptions as exception:
+            if retry == ERROR_MAX_RETRIES or getattr(instance, "aborted", False):
                 raise
-            # Log the exception on retry for inspection.
-            if retry < ERROR_MAX_RETRIES:
-                timeout = min(
-                    ERROR_MAX_TIMEOUT, ERROR_INITIAL_TIMEOUT * (2 ** (retry - 1))
-                )
-                logger.exception(
-                    "Retry %d/%d got exception, will retry in %d seconds.",
-                    retry,
-                    ERROR_MAX_RETRIES,
-                    timeout,
-                )
+            timeout = min(ERROR_MAX_TIMEOUT, ERROR_INITIAL_TIMEOUT * (2 ** (retry - 1)))
+            logger.warning(
+                "Attempt %d/%d failed with %r, retrying in %d seconds.",
+                retry,
+                ERROR_MAX_RETRIES,
+                exception,
+                timeout,
+            )
+            wait_aborted = getattr(instance, "wait_aborted", None)
+            if wait_aborted is None:
                 sleep(timeout)
-            # Raise exception when max retries are exceeded.
-            else:
-                logger.exception("Final retry got exception, re-raising it.")
+            elif wait_aborted(timeout):
                 raise
 
 
@@ -100,6 +106,10 @@ class Transfer:
     def aborted(self) -> bool:
         """Get True if the transfer is aborted."""
         return self._aborted.is_set()
+
+    def wait_aborted(self, timeout: float) -> bool:
+        """Wait at most timeout seconds for the abort, return True on abort."""
+        return self._aborted.wait(timeout)
 
     def abort(self):
         """Abort the transfer.
@@ -226,22 +236,26 @@ class Transfer:
                 continue
             if self.aborted:
                 raise DataTransferError("Transfer aborted.")
+            from_base_url = entry.get("from_base_url", url)
             to_base_url = entry.get("to_base_url", url)
             to_url = Path(entry["path"])
+            from_url = Path(from_base_url) / to_url
             try:
                 if not self.transfer(
-                    entry.get("from_base_url", url),
+                    from_base_url,
                     entry,
                     to_base_url,
                     to_url,
                     from_connector,
                     to_connector,
                 ):
-                    raise DataTransferError()
-            except Exception:
+                    raise DataTransferError(f"Transfer of '{from_url}' failed")
+            except Exception as exception:
                 # The aborted transfer fails on its closed stream.
                 if not self.aborted:
-                    raise
+                    raise DataTransferError(
+                        f"Transfer of '{from_url}' failed: {exception!r}"
+                    ) from exception
             if self.aborted:
                 # Remove the partially transfered object.
                 with suppress(Exception):
@@ -343,10 +357,16 @@ class Transfer:
                 )
 
         elif to_connector.can_open_stream:
-            with self._abortable(
-                to_connector.open_stream(to_base_url / to_url, "wb")
-            ) as stream:
-                from_connector.get(from_url, stream, chunk_size=chunk_size)
+            try:
+                with self._abortable(
+                    to_connector.open_stream(to_base_url / to_url, "wb")
+                ) as stream:
+                    from_connector.get(from_url, stream, chunk_size=chunk_size)
+            except Exception:
+                # Remove the partial object so the retry does not hash it.
+                with suppress(Exception):
+                    to_connector.delete(to_base_url, [to_url])
+                raise
             to_connector.set_hashes(to_base_url / to_url, hashes)
 
         # Otherwise create out own stream and use threads to transfer data.

@@ -107,6 +107,32 @@ class UtilsTest(TestCase):
         results = [f.result() for f in futures[1:]]
         self.assertEqual(results, [33, 33])
 
+    def test_async_paralelize_first_exception(self):
+        release = threading.Event()
+
+        def worker(parts: Sequence[int]) -> int:
+            if parts == [1]:
+                raise ValueError()
+            release.wait()
+            return sum(parts)
+
+        async def first_exception():
+            loop = asyncio.get_running_loop()
+            tasks = await utils.async_paralelize(
+                [1, 2], worker, loop, max_threads=2, return_when=asyncio.FIRST_EXCEPTION
+            )
+            pending = [task for task in tasks if not task.done()]
+            release.set()
+            await asyncio.wait(tasks)
+            return pending
+
+        threading.Timer(2, release.set).start()
+        try:
+            pending = asyncio.run(first_exception())
+        finally:
+            release.set()
+        self.assertEqual(len(pending), 1)
+
     def test_async_paralelize_cancel(self):
         started = threading.Event()
         release = threading.Event()

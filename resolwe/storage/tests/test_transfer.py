@@ -1,5 +1,6 @@
 # pylint: disable=missing-docstring
 import shutil
+import threading
 from pathlib import Path
 from time import time
 from unittest.mock import MagicMock, patch
@@ -95,6 +96,62 @@ class TransferTest(TestCase):
             with self.assertRaises(DataTransferError):
                 t.transfer("base", {}, "base", "1")
         self.assertEqual(len(calls), 1)
+
+    @patch("resolwe.storage.connectors.transfer.ERROR_INITIAL_TIMEOUT", 10)
+    def test_retry_aborted_while_waiting(self):
+        t = Transfer(self.local, self.local)
+        calls = []
+
+        @retry_on_transfer_error
+        def transfer(self, *args, **kwargs):
+            calls.append(args)
+            threading.Timer(0.1, t.abort).start()
+            raise DataTransferError()
+
+        with patch.object(Transfer, "transfer", transfer):
+            start = time()
+            with self.assertRaises(DataTransferError):
+                t.transfer("base", {}, "base", "1")
+        self.assertLess(time() - start, 5)
+        self.assertEqual(len(calls), 1)
+
+    def test_failure_names_object(self):
+        t = Transfer(self.local, self.local)
+        with patch.object(Transfer, "transfer", side_effect=ValueError("boom")):
+            with self.assertRaises(DataTransferError) as context:
+                t.transfer_chunk(Path("base"), [{"path": "1"}])
+        self.assertIn("base/1", str(context.exception))
+        self.assertIn("boom", str(context.exception))
+        self.assertIsInstance(context.exception.__cause__, ValueError)
+
+        with patch.object(Transfer, "transfer", return_value=False):
+            with self.assertRaisesRegex(DataTransferError, "base/1"):
+                t.transfer_chunk(Path("base"), [{"path": "1"}])
+
+    @patch("resolwe.storage.connectors.transfer.ERROR_MAX_RETRIES", 1)
+    def test_partial_object_removed_on_failure(self):
+        class FailingConnector:
+            """Connector without streams whose get writes a part and fails."""
+
+            name = "failing"
+            can_open_stream = False
+            get_ensures_data_integrity = False
+            supported_hash = ["md5"]
+
+            def duplicate(self):
+                return self
+
+            def get(self, url, stream, chunk_size=None):
+                stream.write(b"partial")
+                raise ConnectionResetError()
+
+        destination = self.local.base_path / "retry_copy" / "1"
+        self.addCleanup(shutil.rmtree, destination.parent, ignore_errors=True)
+        entry = {"path": "1", "size": 7, "md5": "a", "crc32c": "b", "awss3etag": "c"}
+        t = Transfer(FailingConnector(), self.local)
+        with self.assertRaises(DataTransferError):
+            t.transfer_chunk(Path("retry_copy"), [entry])
+        self.assertFalse(destination.exists())
 
     def test_abort_stops_before_next_object(self):
         t = Transfer(self.local, self.local)

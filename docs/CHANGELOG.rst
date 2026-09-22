@@ -15,6 +15,10 @@ Fixed
 - Fix the init container waiting for the running downloads when the processing
   is terminated: the transfer is aborted, the download of a shared storage
   location is released and the container exits
+- Retry a failed input data transfer for about two minutes instead of three
+  seconds, including the botocore connection and read errors; remove the
+  partial object before the retry; stop the other workers on a failure and
+  name the failed object in the error
 
 
 ===================
