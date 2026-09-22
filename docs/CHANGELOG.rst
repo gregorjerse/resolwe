@@ -6,6 +6,16 @@ All notable changes to this project are documented in this file.
 This project adheres to `Semantic Versioning <http://semver.org/>`_.
 
 
+==========
+Unreleased
+==========
+
+Changed
+-------
+- The persistent volume claims of the processing and input volumes default to
+  the ``gp3`` storage class instead of ``gp2``
+
+
 ===================
 45.2.0 - 2026-09-16
 ===================
