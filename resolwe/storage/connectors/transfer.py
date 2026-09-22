@@ -16,7 +16,7 @@ from urllib3.exceptions import ProtocolError
 from .baseconnector import BaseStorageConnector
 from .circular_buffer import CircularBuffer
 from .exceptions import DataTransferError
-from .utils import paralelize
+from .utils import largest_first, paralelize
 
 if TYPE_CHECKING:
     from os import PathLike
@@ -225,7 +225,7 @@ class Transfer:
         # Raises the exception of the first failed worker after the others
         # are aborted.
         futures = paralelize(
-            objects=objects_to_transfer,
+            objects=largest_first(objects_to_transfer),
             worker=partial(self.transfer_chunk, url),
             max_threads=max_threads,
             abort=self.abort,

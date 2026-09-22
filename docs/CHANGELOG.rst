@@ -10,6 +10,13 @@ This project adheres to `Semantic Versioning <http://semver.org/>`_.
 Unreleased
 ==========
 
+Changed
+-------
+- The transfer workers take the files largest first from a shared queue
+  instead of a fixed share of the files each, and the init container always
+  uses ``GENESIS_MAX_DOWNLOAD_THREADS`` workers (default ``3``) instead of one
+  per 100 files
+
 Fixed
 -----
 - Fix the init container waiting for the running downloads when the processing
