@@ -15,6 +15,10 @@ Changed
 - The persistent volume claims of the processing and input volumes default to
   the ``gp3`` storage class instead of ``gp2``
 
+Fixed
+-----
+- Fix the init container ignoring the ``LOG_LEVEL`` environment variable
+
 
 ===================
 45.2.0 - 2026-09-16
