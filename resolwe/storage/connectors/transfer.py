@@ -277,8 +277,12 @@ class Transfer:
                     to_connector,
                 ):
                     raise DataTransferError(f"Transfer of '{from_url}' failed")
+            except DataTransferError:
+                # The aborted transfer fails on its closed stream. A
+                # DataTransferError already names the object.
+                if not self.aborted:
+                    raise
             except Exception as exception:
-                # The aborted transfer fails on its closed stream.
                 if not self.aborted:
                     raise DataTransferError(
                         f"Transfer of '{from_url}' failed: {exception!r}"
@@ -452,8 +456,10 @@ class Transfer:
 
                 # Re-raise exception.
                 ex = [f.exception() for f in futures if f.exception() is not None]
-                messages = [str(e) for e in ex]
-                raise DataTransferError("\n\n".join(messages))
+                raise DataTransferError(
+                    f"Transfer of '{from_url}' failed: "
+                    + ", ".join(repr(e) for e in ex)
+                )
 
         # Check hash of the uploaded object.
         if not skip_final_hash_check:

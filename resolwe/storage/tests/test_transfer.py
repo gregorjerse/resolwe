@@ -135,6 +135,13 @@ class TransferTest(TestCase):
             with self.assertRaisesRegex(DataTransferError, "base/1"):
                 t.transfer_chunk(Path("base"), [{"path": "1"}])
 
+        # A DataTransferError already names the object and is not wrapped.
+        error = DataTransferError("Hash md5 does not match while transfering base/1")
+        with patch.object(Transfer, "transfer", side_effect=error):
+            with self.assertRaises(DataTransferError) as context:
+                t.transfer_chunk(Path("base"), [{"path": "1"}])
+        self.assertIs(context.exception, error)
+
     @patch("resolwe.storage.connectors.transfer.ERROR_MAX_RETRIES", 1)
     def test_partial_object_removed_on_failure(self):
         class FailingConnector:
@@ -328,3 +335,40 @@ class TransferTest(TestCase):
             with self.assertRaises(RetriesExceededError):
                 fake.transfer()
         self.assertEqual(fake.calls, 3)
+
+    @patch("resolwe.storage.connectors.transfer.ERROR_MAX_RETRIES", 1)
+    def test_buffered_failure_names_object(self):
+        class Connector:
+            """Connector without streams, so the transfer uses the buffer."""
+
+            can_open_stream = False
+            get_ensures_data_integrity = False
+            put_ensures_data_integrity = False
+            supported_hash = ["md5"]
+            refresh_hash_after_transfer = []
+            name = "buffered"
+
+            def duplicate(self):
+                return self
+
+            def get_hash(self, url, hash_type):
+                return None
+
+            def delete(self, url, urls):
+                pass
+
+            def get(self, url, stream, chunk_size):
+                raise ConnectionResetError()
+
+            def push(self, stream, url, chunk_size, hashes):
+                while stream.read(1):
+                    pass
+
+        entry = {"path": "1", "size": 1, "md5": "a", "crc32c": "a", "awss3etag": "a"}
+        t = Transfer(Connector(), Connector())
+        with self.assertRaises(DataTransferError) as context:
+            t.transfer_chunk(Path("base"), [entry])
+        self.assertEqual(
+            str(context.exception),
+            "Transfer of 'base/1' failed: ConnectionResetError()",
+        )
