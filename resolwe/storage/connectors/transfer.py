@@ -229,26 +229,24 @@ class Transfer:
             to_base_url = entry.get("to_base_url", url)
             to_url = Path(entry["path"])
             try:
-                transfered = self.transfer(
+                if not self.transfer(
                     entry.get("from_base_url", url),
                     entry,
                     to_base_url,
                     to_url,
                     from_connector,
                     to_connector,
-                )
+                ):
+                    raise DataTransferError()
             except Exception:
                 # The aborted transfer fails on its closed stream.
                 if not self.aborted:
                     raise
-                transfered = False
             if self.aborted:
                 # Remove the partially transfered object.
                 with suppress(Exception):
                     to_connector.delete(to_base_url, [to_url])
                 raise DataTransferError("Transfer aborted.")
-            if not transfered:
-                raise DataTransferError()
         return True
 
     @retry_on_transfer_error
