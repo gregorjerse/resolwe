@@ -171,6 +171,11 @@ async def download_to_location(
             # Stop the other workers, wait for them and report the failure.
             transfer.abort()
             await asyncio.wait(tasks)
+            # Retrieve the failures of the aborted workers so asyncio does not
+            # log them as never retrieved.
+            for task in tasks:
+                if not task.cancelled():
+                    task.exception()
             failed[0].result()
     except asyncio.CancelledError:
         # The worker threads cannot be cancelled: abort the transfer to stop them.
