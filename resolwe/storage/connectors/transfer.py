@@ -6,7 +6,6 @@ import threading
 from contextlib import contextmanager, suppress
 from functools import partial
 from pathlib import Path
-from time import sleep
 from typing import TYPE_CHECKING, Iterable, Iterator, List, Union
 
 import wrapt
@@ -87,7 +86,8 @@ def is_transient(exception: Exception) -> bool:
 def retry_on_transfer_error(wrapped, instance, args, kwargs):
     """Retry a transient transfer error with exponential backoff.
 
-    The call is not retried when the error is not transient (see
+    The wrapped function must be a method of :class:`Transfer`. The call is
+    not retried when the error is not transient (see
     :func:`is_transient`) or when the transfer instance is aborted. The wait
     between the attempts ends on abort. The last failure is raised.
     """
@@ -98,7 +98,7 @@ def retry_on_transfer_error(wrapped, instance, args, kwargs):
             if (
                 retry == ERROR_MAX_RETRIES
                 or not is_transient(exception)
-                or getattr(instance, "aborted", False)
+                or instance.aborted
             ):
                 raise
             timeout = min(ERROR_MAX_TIMEOUT, ERROR_INITIAL_TIMEOUT * (2 ** (retry - 1)))
@@ -109,10 +109,7 @@ def retry_on_transfer_error(wrapped, instance, args, kwargs):
                 exception,
                 timeout,
             )
-            wait_aborted = getattr(instance, "wait_aborted", None)
-            if wait_aborted is None:
-                sleep(timeout)
-            elif wait_aborted(timeout):
+            if instance.wait_aborted(timeout):
                 raise
 
 

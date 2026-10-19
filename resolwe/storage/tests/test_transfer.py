@@ -54,8 +54,15 @@ class TransferTest(TestCase):
     def test_retry_transfer(self):
         t = Transfer(self.local, self.local)
         mock: MagicMock = MagicMock(side_effect=[True, True])
-        t.transfer = retry_on_transfer_error(mock)
-        # with self.assertRaises(DataTransferError):
+
+        @retry_on_transfer_error
+        def transfer(self, *args, **kwargs):
+            return mock(*args, **kwargs)
+
+        # Patch the class so the decorator gets the Transfer instance.
+        patcher = patch.object(Transfer, "transfer", transfer)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         t.transfer_objects("test_url", [{"path": "1"}, {"path": "2"}], max_threads=1)
         self.assertEqual(len(mock.call_args_list), 2)
 
