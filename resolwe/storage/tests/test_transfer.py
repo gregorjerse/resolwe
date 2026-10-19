@@ -130,3 +130,45 @@ class TransferTest(TestCase):
             with self.assertRaisesRegex(DataTransferError, "aborted"):
                 t.transfer_chunk(Path(""), [entry])
         self.assertFalse(destination.exists())
+
+    def test_abort_stops_buffered_download(self):
+        """The download into the buffer fails on its next write after abort."""
+
+        class Connector:
+            can_open_stream = False
+            get_ensures_data_integrity = False
+            put_ensures_data_integrity = False
+            supported_hash = ["md5"]
+            refresh_hash_after_transfer = []
+            name = "buffered"
+
+            def duplicate(self):
+                return self
+
+            def get_hash(self, url, hash_type):
+                return None
+
+            def delete(self, url, urls):
+                pass
+
+        written = []
+
+        def get(url, stream, chunk_size):
+            # Like the S3 and GCS connectors, ignore the return of write.
+            for chunk in range(10):
+                stream.write(b"x")
+                written.append(chunk)
+                if chunk == 0:
+                    t.abort()
+
+        def push(stream, url, chunk_size, hashes):
+            while stream.read(1):
+                pass
+
+        source, destination = Connector(), Connector()
+        source.get, destination.push = get, push
+        t = Transfer(source, destination)
+        entry = {"path": "1", "size": 10, "md5": "a", "crc32c": "a", "awss3etag": "a"}
+        with self.assertRaisesRegex(DataTransferError, "aborted"):
+            t.transfer_chunk(Path("base"), [entry])
+        self.assertEqual(written, [0])
