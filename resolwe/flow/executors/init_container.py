@@ -160,7 +160,13 @@ async def download_to_location(
             max_threads=max_threads,
             return_when=asyncio.FIRST_EXCEPTION,
         )
-        failed = [task for task in tasks if task.done() and task.exception()]
+        # A cancelled task raises CancelledError on exception(): skip it so a
+        # failure is not reported as a terminate.
+        failed = [
+            task
+            for task in tasks
+            if task.done() and not task.cancelled() and task.exception()
+        ]
         if failed:
             # Stop the other workers, wait for them and report the failure.
             transfer.abort()
