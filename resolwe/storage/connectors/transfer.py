@@ -34,12 +34,16 @@ try:
     from botocore.exceptions import ClientError
     from botocore.exceptions import ConnectionError as BotoConnectionError
     from botocore.exceptions import HTTPClientError, IncompleteReadError
+    from s3transfer.exceptions import RetriesExceededError
 
+    # download_fileobj retries the read errors of the object body itself and
+    # then raises RetriesExceededError, not the read error.
     boto_exceptions = [
         ClientError,
         BotoConnectionError,
         HTTPClientError,
         IncompleteReadError,
+        RetriesExceededError,
     ]
     client_errors: tuple = (ClientError,)
 except ModuleNotFoundError:

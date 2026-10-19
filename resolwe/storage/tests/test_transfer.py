@@ -295,3 +295,29 @@ class TransferTest(TestCase):
                 with self.assertRaises(ClientError):
                     fake.transfer()
                 self.assertEqual(fake.calls, attempts, code)
+
+    def test_retry_s3_download_read_error(self):
+        try:
+            from s3transfer.exceptions import RetriesExceededError
+        except ModuleNotFoundError:
+            self.skipTest("s3transfer is not installed")
+        from botocore.exceptions import ReadTimeoutError
+
+        class FakeTransfer:
+            aborted = False
+            calls = 0
+
+            def wait_aborted(self, timeout):
+                return False
+
+            @retry_on_transfer_error
+            def transfer(self):
+                self.calls += 1
+                # What download_fileobj raises when every read of the body fails.
+                raise RetriesExceededError(ReadTimeoutError(endpoint_url="url"))
+
+        fake = FakeTransfer()
+        with patch("resolwe.storage.connectors.transfer.ERROR_MAX_RETRIES", 3):
+            with self.assertRaises(RetriesExceededError):
+                fake.transfer()
+        self.assertEqual(fake.calls, 3)
