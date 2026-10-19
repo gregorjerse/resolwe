@@ -12,7 +12,7 @@ import shutil
 import sys
 from collections import defaultdict
 from contextlib import suppress
-from typing import Any, Optional
+from typing import Any
 
 import zmq
 import zmq.asyncio
@@ -243,7 +243,7 @@ class InitProtocol(BaseProtocol):
         self,
         communicator: BaseCommunicator,
         logger: logging.Logger,
-        main_task: Optional[asyncio.Task],
+        main_task: asyncio.Task,
     ):
         """Initialize."""
         super().__init__(communicator, logger)
@@ -257,8 +257,7 @@ class InitProtocol(BaseProtocol):
         """
         logger.debug("Init container received terminate request, terminating.")
         await error("Init container received terminating request.", self.communicator)
-        if self.main_task is not None:
-            self.main_task.cancel()
+        self.main_task.cancel()
 
     async def transfer_missing_data(self):
         """Transfer missing data.
@@ -344,7 +343,9 @@ async def main():
     :raises asyncio.exceptions.CancelledError: when task is terminated.
     """
     communicator = _get_communicator()
-    protocol = InitProtocol(communicator, logger, asyncio.current_task())
+    main_task = asyncio.current_task()
+    assert main_task is not None, "main() must run in a task."
+    protocol = InitProtocol(communicator, logger, main_task)
     communicate_task = asyncio.create_task(protocol.communicate())
     heartbeat_task = asyncio.create_task(send_heartbeat(communicator))
 
