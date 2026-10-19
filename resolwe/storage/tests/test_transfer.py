@@ -229,3 +229,23 @@ class TransferTest(TestCase):
         with self.assertRaisesRegex(DataTransferError, "aborted"):
             t.transfer_chunk(Path("base"), [entry])
         self.assertEqual(written, [0])
+
+    def test_transfer_objects_stops_on_failure(self):
+        t = Transfer(self.local, self.local)
+
+        def transfer_chunk(url, objects):
+            if objects[0]["path"] == "bad":
+                raise DataTransferError("bad")
+            # The other worker stops only when the transfer is aborted.
+            if not t.wait_aborted(5):
+                return True
+            raise DataTransferError("Transfer aborted.")
+
+        start = time()
+        with patch.object(t, "transfer_chunk", side_effect=transfer_chunk):
+            with self.assertRaisesRegex(DataTransferError, "bad"):
+                t.transfer_objects(
+                    "base", [{"path": "bad"}, {"path": "good"}], max_threads=2
+                )
+        self.assertTrue(t.aborted)
+        self.assertLess(time() - start, 2)

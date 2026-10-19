@@ -195,14 +195,14 @@ class Transfer:
 
         url = Path(url)
 
+        # Raises the exception of the first failed worker after the others
+        # are aborted.
         futures = paralelize(
             objects=objects_to_transfer,
             worker=partial(self.transfer_chunk, url),
             max_threads=max_threads,
+            abort=self.abort,
         )
-
-        # Check future results. This wil re-raise any exception raised in
-        # _transfer_chunk.
         if not all(future.result() for future in futures):
             raise DataTransferError()
 

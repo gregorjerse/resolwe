@@ -101,11 +101,25 @@ class UtilsTest(TestCase):
         results = [f.result() for f in futures]
         self.assertEqual(results, [34, 33, 33])
 
-        futures = utils.paralelize(parts, worker_exception, max_threads=3)
         with self.assertRaises(Exception):
-            futures[0].result()
-        results = [f.result() for f in futures[1:]]
-        self.assertEqual(results, [33, 33])
+            utils.paralelize(parts, worker_exception, max_threads=3)
+
+    def test_paralelize_abort(self):
+        aborted = threading.Event()
+
+        def worker(parts: Sequence[str]) -> bool:
+            if parts == ["bad"]:
+                raise ValueError("bad")
+            # Runs until aborted, then fails like an aborted transfer.
+            if not aborted.wait(5):
+                return True
+            raise RuntimeError("aborted")
+
+        start = time()
+        with self.assertRaisesRegex(ValueError, "bad"):
+            utils.paralelize(["bad", "good"], worker, max_threads=2, abort=aborted.set)
+        self.assertTrue(aborted.is_set())
+        self.assertLess(time() - start, 2)
 
     def test_async_paralelize_first_exception(self):
         release = threading.Event()
