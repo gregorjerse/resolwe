@@ -133,5 +133,5 @@ async def async_paralelize(
     try:
         await asyncio.wait(tasks)
     finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+        executor.shutdown(wait=False)
     return tasks
