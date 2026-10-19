@@ -381,85 +381,86 @@ class Transfer:
         #   from_connector directly to the opened stream.
         # - if neither support streams then we use buffer to transfer the data
         #   from from_connector to to_connector.
-        if from_connector.can_open_stream:
-            with self._abortable(from_connector.open_stream(from_url, "rb")) as stream:
-                to_connector.push(
-                    stream, to_base_url / to_url, chunk_size=chunk_size, hashes=hashes
-                )
+        try:
+            if from_connector.can_open_stream:
+                with self._abortable(
+                    from_connector.open_stream(from_url, "rb")
+                ) as stream:
+                    to_connector.push(
+                        stream,
+                        to_base_url / to_url,
+                        chunk_size=chunk_size,
+                        hashes=hashes,
+                    )
 
-        elif to_connector.can_open_stream:
-            try:
+            elif to_connector.can_open_stream:
                 with self._abortable(
                     to_connector.open_stream(to_base_url / to_url, "wb")
                 ) as stream:
                     from_connector.get(from_url, stream, chunk_size=chunk_size)
-            except Exception:
-                # Remove the partial object so the retry does not hash it.
-                with suppress(Exception):
-                    to_connector.delete(to_base_url, [to_url])
-                raise
-            to_connector.set_hashes(to_base_url / to_url, hashes)
+                to_connector.set_hashes(to_base_url / to_url, hashes)
 
-        # Otherwise create out own stream and use threads to transfer data.
-        else:
+            # Otherwise create out own stream and use threads to transfer data.
+            else:
 
-            def future_done(stream_to_close, future):
-                stream_to_close.close()
-                if future.exception() is not None:
-                    executor.shutdown(wait=False)
+                def future_done(stream_to_close, future):
+                    stream_to_close.close()
+                    if future.exception() is not None:
+                        executor.shutdown(wait=False)
 
-            # The constant 1 is added to the object size to make sure the
-            # buffer_size is at least 1. Otherwise uploading files of size 0
-            # will cause a deadlock.
-            data_stream = CircularBuffer(
-                buffer_size=min(200 * 1024 * 1024, object_["size"] + 1)
-            )
-            with (
-                self._abortable(data_stream),
-                concurrent.futures.ThreadPoolExecutor() as executor,
-            ):
-                download_task = executor.submit(
-                    from_connector.get,
-                    from_url,
-                    data_stream,
-                    chunk_size=chunk_size,
+                # The constant 1 is added to the object size to make sure the
+                # buffer_size is at least 1. Otherwise uploading files of size 0
+                # will cause a deadlock.
+                data_stream = CircularBuffer(
+                    buffer_size=min(200 * 1024 * 1024, object_["size"] + 1)
                 )
-                upload_task = executor.submit(
-                    to_connector.push,
-                    data_stream,
-                    to_base_url / to_url,
-                    chunk_size=chunk_size,
-                    hashes=hashes,
-                )
-                download_task.add_done_callback(partial(future_done, data_stream))
-                futures = (download_task, upload_task)
+                with (
+                    self._abortable(data_stream),
+                    concurrent.futures.ThreadPoolExecutor() as executor,
+                ):
+                    download_task = executor.submit(
+                        from_connector.get,
+                        from_url,
+                        data_stream,
+                        chunk_size=chunk_size,
+                    )
+                    upload_task = executor.submit(
+                        to_connector.push,
+                        data_stream,
+                        to_base_url / to_url,
+                        chunk_size=chunk_size,
+                        hashes=hashes,
+                    )
+                    download_task.add_done_callback(partial(future_done, data_stream))
+                    futures = (download_task, upload_task)
 
-            # If any of the transfer futures has raised an exception the
-            # upload must be aborted and DataTransferError raised.
-            #
-            # When transfer was a success we have to store the server-side
-            # computed hashes to the hashes given on object. They may differ
-            # from computed ones since server-side encryption can be used
-            # which changes hashes (at least this happens with awss3etag when
-            # SSE-KMS encryption is used on S3 bucket).
-            if any(f.exception() is not None for f in futures):
-                # Log exceptions in threads to preserve original stack trace.
-                for f in futures:
-                    try:
-                        f.result()
-                    except Exception:
-                        logger.exception("Exception occured while transfering data")
+                # If any of the transfer futures has raised an exception the
+                # upload must be aborted and DataTransferError raised.
+                #
+                # When transfer was a success we have to store the server-side
+                # computed hashes to the hashes given on object. They may differ
+                # from computed ones since server-side encryption can be used
+                # which changes hashes (at least this happens with awss3etag when
+                # SSE-KMS encryption is used on S3 bucket).
+                if any(f.exception() is not None for f in futures):
+                    # Log exceptions in threads to preserve original stack trace.
+                    for f in futures:
+                        try:
+                            f.result()
+                        except Exception:
+                            logger.exception("Exception occured while transfering data")
 
-                # Delete transfered data.
-                with suppress(Exception):
-                    to_connector.delete(to_base_url, [to_url])
-
-                # Re-raise exception.
-                ex = [f.exception() for f in futures if f.exception() is not None]
-                raise DataTransferError(
-                    f"Transfer of '{from_url}' failed: "
-                    + ", ".join(repr(e) for e in ex)
-                )
+                    # Re-raise exception.
+                    ex = [f.exception() for f in futures if f.exception() is not None]
+                    raise DataTransferError(
+                        f"Transfer of '{from_url}' failed: "
+                        + ", ".join(repr(e) for e in ex)
+                    )
+        except Exception:
+            # Remove the partial object so the retry does not hash it.
+            with suppress(Exception):
+                to_connector.delete(to_base_url, [to_url])
+            raise
 
         # Check hash of the uploaded object.
         if not skip_final_hash_check:

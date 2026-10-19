@@ -372,3 +372,52 @@ class TransferTest(TestCase):
             str(context.exception),
             "Transfer of 'base/1' failed: ConnectionResetError()",
         )
+
+    @patch("resolwe.storage.connectors.transfer.ERROR_MAX_RETRIES", 1)
+    def test_partial_object_removed_on_failed_stream(self):
+        """A failed push from a stream leaves no partial object behind."""
+
+        class Stream:
+            """Return one chunk, then fail like a dropped connection."""
+
+            def __init__(self):
+                self.reads = 0
+                self.closed = False
+
+            def read(self, size=-1):
+                self.reads += 1
+                if self.reads == 1:
+                    return b"x" * size
+                raise ConnectionResetError()
+
+            def close(self):
+                self.closed = True
+
+        class StreamConnector:
+            """Source connector that opens streams, like the result upload."""
+
+            name = "stream"
+            can_open_stream = True
+            get_ensures_data_integrity = False
+            supported_hash = ["md5"]
+
+            def duplicate(self):
+                return self
+
+            def open_stream(self, url, mode):
+                return Stream()
+
+        destination = self.local.base_path / "stream_copy" / "1"
+        self.addCleanup(shutil.rmtree, destination.parent, ignore_errors=True)
+        entry = {
+            "path": "1",
+            "size": 8,
+            "chunk_size": 4,
+            "md5": "a",
+            "crc32c": "b",
+            "awss3etag": "c",
+        }
+        t = Transfer(StreamConnector(), self.local)
+        with self.assertRaisesRegex(DataTransferError, "ConnectionResetError"):
+            t.transfer_chunk(Path("stream_copy"), [entry])
+        self.assertFalse(destination.exists())
