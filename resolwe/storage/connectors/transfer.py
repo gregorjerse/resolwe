@@ -41,8 +41,10 @@ try:
         HTTPClientError,
         IncompleteReadError,
     ]
+    client_errors: tuple = (ClientError,)
 except ModuleNotFoundError:
     boto_exceptions = []
+    client_errors = ()
 
 
 logger = logging.getLogger(__name__)
@@ -58,18 +60,42 @@ transfer_exceptions = tuple(
 )
 
 
+# The 400 error code of S3 for a request it did not read in time.
+RETRYABLE_CLIENT_ERROR_CODES = {"RequestTimeout"}
+
+
+def is_transient(exception: Exception) -> bool:
+    """Return True when the failed request can be repeated.
+
+    A botocore ClientError is transient only for a server error (5xx), a
+    throttling response (429) or a request timeout. The other client errors,
+    such as a missing object or denied access, do not change on a retry.
+    """
+    if not isinstance(exception, client_errors):
+        return True
+    response = exception.response
+    status = response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)
+    code = response.get("Error", {}).get("Code", "")
+    return status >= 500 or status == 429 or code in RETRYABLE_CLIENT_ERROR_CODES
+
+
 @wrapt.decorator
 def retry_on_transfer_error(wrapped, instance, args, kwargs):
-    """Retry on transfer error with exponential backoff.
+    """Retry a transient transfer error with exponential backoff.
 
-    The call is not retried when the transfer instance is aborted and the
-    wait between the attempts ends on abort. The last failure is raised.
+    The call is not retried when the error is not transient (see
+    :func:`is_transient`) or when the transfer instance is aborted. The wait
+    between the attempts ends on abort. The last failure is raised.
     """
     for retry in range(1, ERROR_MAX_RETRIES + 1):
         try:
             return wrapped(*args, **kwargs)
         except transfer_exceptions as exception:
-            if retry == ERROR_MAX_RETRIES or getattr(instance, "aborted", False):
+            if (
+                retry == ERROR_MAX_RETRIES
+                or not is_transient(exception)
+                or getattr(instance, "aborted", False)
+            ):
                 raise
             timeout = min(ERROR_MAX_TIMEOUT, ERROR_INITIAL_TIMEOUT * (2 ** (retry - 1)))
             logger.warning(

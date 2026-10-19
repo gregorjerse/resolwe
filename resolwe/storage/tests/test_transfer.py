@@ -249,3 +249,49 @@ class TransferTest(TestCase):
                 )
         self.assertTrue(t.aborted)
         self.assertLess(time() - start, 2)
+
+    def test_retry_client_error(self):
+        try:
+            from botocore.exceptions import ClientError
+        except ModuleNotFoundError:
+            self.skipTest("botocore is not installed")
+
+        def client_error(code, status):
+            return ClientError(
+                {
+                    "Error": {"Code": code},
+                    "ResponseMetadata": {"HTTPStatusCode": status},
+                },
+                "GetObject",
+            )
+
+        class FakeTransfer:
+            aborted = False
+
+            def __init__(self, error):
+                self.error = error
+                self.calls = 0
+
+            def wait_aborted(self, timeout):
+                return False
+
+            @retry_on_transfer_error
+            def transfer(self):
+                self.calls += 1
+                raise self.error
+
+        cases = [
+            ("NoSuchKey", 404, 1),
+            ("AccessDenied", 403, 1),
+            ("InvalidObjectState", 403, 1),
+            ("SlowDown", 503, 3),
+            ("InternalError", 500, 3),
+            ("TooManyRequests", 429, 3),
+            ("RequestTimeout", 400, 3),
+        ]
+        with patch("resolwe.storage.connectors.transfer.ERROR_MAX_RETRIES", 3):
+            for code, status, attempts in cases:
+                fake = FakeTransfer(client_error(code, status))
+                with self.assertRaises(ClientError):
+                    fake.transfer()
+                self.assertEqual(fake.calls, attempts, code)
