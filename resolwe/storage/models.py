@@ -521,12 +521,12 @@ class StorageLocation(AuditModel):
             return True
 
         max_threads = max(1, min((self.files.count() // 5), 20))
-        futures = paralelize(
+        verified = paralelize(
             self.files.all().exclude(path__endswith="/"),
             worker,
             max_threads=max_threads,
         )
-        return all(future.result() for future in futures)
+        return all(verified)
 
 
 class AccessLog(AuditModel):

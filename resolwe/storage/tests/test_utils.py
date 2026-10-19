@@ -84,13 +84,11 @@ class UtilsTest(TestCase):
                     raise Exception()
             return 0
 
-        futures = utils.paralelize(parts, worker)
-        results = [f.result() for f in futures]
+        results = utils.paralelize(parts, worker)
         self.assertEqual(len(results), 10)
         self.assertEqual(sum(results), 100)
 
-        futures = utils.paralelize(parts, worker, max_threads=200)
-        results = [f.result() for f in futures]
+        results = utils.paralelize(parts, worker, max_threads=200)
         self.assertEqual(len(results), 100)
         self.assertEqual(sum(results), 100)
 
@@ -131,8 +129,7 @@ class UtilsTest(TestCase):
             return done
 
         threading.Timer(5, fast_done.set).start()
-        futures = utils.paralelize(["slow"] + ["fast"] * 9, worker, max_threads=2)
-        results = [f.result() for f in futures]
+        results = utils.paralelize(["slow"] + ["fast"] * 9, worker, max_threads=2)
         self.assertEqual(sorted(len(done) for done in results), [1, 9])
 
     def test_async_paralelize_first_exception(self):

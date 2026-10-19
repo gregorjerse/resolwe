@@ -102,7 +102,7 @@ def paralelize(
     worker: Callable[[Iterable[Any]], Any],
     max_threads: int = 10,
     abort: Optional[Callable[[], None]] = None,
-) -> List[concurrent.futures.Future]:
+) -> List[Any]:
     """Run the worker in up to max_threads threads over the objects.
 
     The workers share one iterator over the objects and each takes the next
@@ -118,7 +118,7 @@ def paralelize(
 
     :raises Exception: the exception of the first failed worker.
 
-    :returns: one Future per worker thread, all done.
+    :returns: the result of each worker thread.
     """
     objects = list(objects)
     if not objects:
@@ -135,7 +135,7 @@ def paralelize(
             abort()
     if failed:
         failed[0].result()
-    return futures
+    return [future.result() for future in futures]
 
 
 async def async_paralelize(

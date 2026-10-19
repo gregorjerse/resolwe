@@ -224,13 +224,13 @@ class Transfer:
 
         # Raises the exception of the first failed worker after the others
         # are aborted.
-        futures = paralelize(
+        transfered = paralelize(
             objects=largest_first(objects_to_transfer),
             worker=partial(self.transfer_chunk, url),
             max_threads=max_threads,
             abort=self.abort,
         )
-        if not all(future.result() for future in futures):
+        if not all(transfered):
             raise DataTransferError()
 
         # Post-processing.
