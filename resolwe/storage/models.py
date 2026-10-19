@@ -521,8 +521,10 @@ class StorageLocation(AuditModel):
             return True
 
         max_threads = max(1, min((self.files.count() // 5), 20))
+        # The local connector reads the whole file to hash it: start with the
+        # largest files so the workers finish at about the same time.
         verified = paralelize(
-            self.files.all().exclude(path__endswith="/"),
+            self.files.all().exclude(path__endswith="/").order_by("-size"),
             worker,
             max_threads=max_threads,
         )
