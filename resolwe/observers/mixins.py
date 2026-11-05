@@ -75,7 +75,9 @@ class ObservableMixin:
         except IntegrityError:
             # When the websocket of the session closes while subscribing, its
             # disconnect handler deletes the new subscription and adding the
-            # next observer to it violates the foreign key.
+            # next observer to it violates the foreign key. Each observer is added
+            # in its own transaction, so the error is raised here and not when the
+            # request commits.
             if Subscription.objects.filter(pk=subscription.pk).exists():
                 raise
             raise NotFound(f"Session {session_id} was closed.")

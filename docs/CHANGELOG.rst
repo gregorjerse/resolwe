@@ -12,7 +12,7 @@ Unreleased
 
 Fixed
 -----
-- Return ``404`` instead of a server error from the observer ``subscribe``
+- Return ``404`` instead of ``500`` from the observer ``subscribe``
   endpoint when the websocket of the session closes during the request and
   its disconnect handler deletes the new subscription
 
