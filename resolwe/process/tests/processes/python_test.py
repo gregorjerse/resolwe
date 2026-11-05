@@ -254,12 +254,10 @@ class ReportErrorProcess(Process):
     version = "0.0.1"
     process_type = "data:python:error:report"
 
-    class Output:
-        string_output = StringField(label="String output", required=False)
-
     def run(self, inputs, outputs):
+        # Nothing follows the error: when it does not stop the process, the
+        # process exits normally and the return code stays unset.
         self.error("Reported error in ReportErrorProcess")
-        outputs.string_output = "Not reached"
 
 
 class AnnotateProcessV2(Process):

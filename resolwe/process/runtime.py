@@ -18,11 +18,18 @@ logger = logging.getLogger(__name__)
 
 
 class ProcessError(Exception):
-    """Error reported by the process with :meth:`Process.error`.
+    """Error that stops the process.
 
-    The message is already sent to the listener when the exception is raised,
-    so it stops the process without being reported again.
+    :meth:`Process.error` sends the message to the listener and raises it
+    with ``reported`` set, so :meth:`Process.start` does not send it again.
+    When the exception is raised directly, :meth:`Process.start` sends the
+    message.
     """
+
+    def __init__(self, message: str, *, reported: bool = False):
+        """Store the message and whether it was already sent."""
+        super().__init__(message)
+        self.reported = reported
 
 
 class FlushOnWrite:
@@ -198,7 +205,7 @@ class Process(metaclass=ProcessMeta):
         """
         to_send = " ".join([str(x) for x in args])
         self._process_log({"error": [to_send]})
-        raise ProcessError(to_send)
+        raise ProcessError(to_send, reported=True)
 
     def get_data_id_by_slug(self, slug) -> int:
         """Find data object ID for given slug."""
@@ -242,8 +249,10 @@ class Process(metaclass=ProcessMeta):
         try:
             self.run(self.data.input, self.data.output)
             return self.data.output.freeze()
-        except ProcessError:
+        except ProcessError as error:
             self.logger.exception("Process reported an error")
+            if not error.reported:
+                self._process_log({"error": [str(error)]})
             raise
         except Exception as error:
             self.logger.exception("Exception while running process")

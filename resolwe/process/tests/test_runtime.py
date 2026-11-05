@@ -2,13 +2,14 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+from resolwe.process.communicator import CommandError
 from resolwe.process.runtime import Process, ProcessError
 
 
 class ProcessStartTest(unittest.TestCase):
     """Test how ``Process.start`` reports errors to the listener."""
 
-    def start(self, run) -> list:
+    def start(self, run, process_log=None) -> list:
         """Start a process with the given ``run`` method.
 
         :return: the arguments of the ``process_log`` commands sent.
@@ -19,6 +20,8 @@ class ProcessStartTest(unittest.TestCase):
             patch("resolwe.process.runtime.communicator") as communicator,
             self.assertLogs("TestProcess", level="ERROR"),
         ):
+            if process_log is not None:
+                communicator.process_log.side_effect = process_log
             try:
                 process.start()
             finally:
@@ -38,6 +41,23 @@ class ProcessStartTest(unittest.TestCase):
             self.start(run)
         self.assertEqual(reached, [])
         self.assertEqual(self.sent, [{"error": ["Wrong input"]}])
+
+    def test_error_stops_process_when_log_is_rejected(self):
+        def run(self, inputs, outputs):
+            self.error("Wrong input")
+
+        rejected = CommandError("Command 'process_log' failed: rejected")
+        with self.assertRaisesRegex(ProcessError, "^Wrong input$"):
+            self.start(run, process_log=rejected)
+        self.assertEqual(self.sent, [{"error": ["Wrong input"]}])
+
+    def test_raised_process_error_reported_once(self):
+        def run(self, inputs, outputs):
+            raise ProcessError("Raised directly")
+
+        with self.assertRaisesRegex(ProcessError, "^Raised directly$"):
+            self.start(run)
+        self.assertEqual(self.sent, [{"error": ["Raised directly"]}])
 
     def test_exception_reported_once(self):
         def run(self, inputs, outputs):

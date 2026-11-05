@@ -326,8 +326,7 @@ class PythonProcessTest(ProcessTestCase):
             "test-python-process-report-error", assert_status=Data.STATUS_ERROR
         )
         self.assertEqual(data.process_error, ["Reported error in ReportErrorProcess"])
-        self.assertNotIn("string_output", data.output)
-        self.assertNotEqual(data.process_rc, 0)
+        self.assertEqual(data.process_rc, 1)
 
     @with_docker_executor
     @tag_process("test-python-process-file")

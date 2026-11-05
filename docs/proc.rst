@@ -554,7 +554,9 @@ Status of the processing jobs can be set by modifying the following fields:
 * ``self.error()``
 
     Sets the error message for the process and stops it by raising
-    ``resolwe.process.ProcessError``. Processing jobs with the status set to
+    ``resolwe.process.ProcessError``. Do not call it inside a ``try`` block
+    that catches ``Exception``, since that catches the error and the process
+    continues. Processing jobs with the status set to
     ``ERROR`` will be marked as failed. All processes that depend on this
     process will subsequently fail and their status will be set to ``ERROR`` as
     well. Only the first error message is stored, so report all problems in a
