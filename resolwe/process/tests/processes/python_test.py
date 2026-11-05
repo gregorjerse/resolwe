@@ -248,6 +248,20 @@ class ErrorProcess(Process):
         raise ValueError("Value error in ErrorProcess")
 
 
+class ReportErrorProcess(Process):
+    slug = "test-python-process-report-error"
+    name = "Test Python Process Report Error"
+    version = "0.0.1"
+    process_type = "data:python:error:report"
+
+    class Output:
+        string_output = StringField(label="String output", required=False)
+
+    def run(self, inputs, outputs):
+        self.error("Reported error in ReportErrorProcess")
+        outputs.string_output = "Not reached"
+
+
 class AnnotateProcessV2(Process):
     slug = "test-python-process-annotate-entity-v2"
     name = "Test Python Process Annotate Entity V2"
