@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file.
 This project adheres to `Semantic Versioning <http://semver.org/>`_.
 
 
+==========
+Unreleased
+==========
+
+Changed
+-------
+- Include the annotation values of entities in their full-text search
+  vector, so the ``text`` filter of the entity endpoint matches annotation
+  labels and vocabulary values. The migration recomputes the search vector
+  of every entity in batches of 1000
+
 ===================
 45.2.0 - 2026-09-16
 ===================
